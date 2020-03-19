@@ -1,1 +1,1 @@
-# ProteinMap
+# ProteinUniverse
