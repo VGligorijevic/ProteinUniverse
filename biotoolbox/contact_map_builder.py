@@ -41,21 +41,28 @@ def correct_residue(x, target):
         return False
 
 
-class ContactMapBuilder:
-    def __init__(self):
-        pass
+class DistanceMapBuilder:
+    def __init__(self, verbose=True, pedantic=True):
+        self.verbose = verbose
+        self.pedantic = pedantic
 
-    def generate_contact_map_for_pdb(self, structure_container, pedantic_mode=True, verbose=True):
-        aligner = Align.PairwiseAligner()
+    def speak(self, *args, **kwargs):
+        """
+        Print a message or blackhole it
+        """
+        if self.verbose:
+            print(*args, **kwargs)
+    
+    def generate_map_for_pdb(self, structure_container):
+
+        aligner      = Align.PairwiseAligner()
         contact_maps = ContactMapContainer()
-
-        model = structure_container.structure[0]
+        model        = structure_container.structure[0]
 
         for chain_name in structure_container.chains:
             chain = structure_container.chains[chain_name]
             contact_maps.with_chain(chain_name)
-            if verbose:
-                print(f"\nProcessing chain {chain_name}")
+            self.speak(f"\nProcessing chain {chain_name}")
 
             if chain['seqres-seq'] is not None and len(chain['seqres-seq']) > 0:
                 contact_maps.with_method_for_chain(chain_name, ALIGNED_BY_SEQRES)
@@ -64,10 +71,9 @@ class ContactMapBuilder:
 
                 alignment = aligner.align(seqres_seq, atom_seq)
                 specific_alignment = next(alignment)
-                if verbose:
-                    print(f"Seqres seq: {seqres_seq}")
-                    print(f"Atom seq:   {atom_seq}")
-                    print(specific_alignment)
+                self.speak(f"Seqres seq: {seqres_seq}",
+                           f"Atom seq:   {atom_seq}",
+                           specific_alignment, sep='\n')
 
                 contact_maps.with_alignment_for_chain(chain_name, specific_alignment)
 
@@ -115,20 +121,19 @@ class ContactMapBuilder:
                     [r.resname if r is not None else 'XXX' for r in final_residue_list])
                 final_seq_one_letter_codes = seq1(final_seq_three_letter_codes, undef_code='-',
                                                   custom_map=protein_letters_3to1)
-                if verbose:
-                    print(f"Final [len of seq {len(seqres_seq)}] [len of result {len(final_seq_one_letter_codes)}] "
-                          f"[len of final residue list {len(final_residue_list)}]:\n{final_seq_one_letter_codes}")
+                self.speak(f"Final [len of seq {len(seqres_seq)}] [len of result {len(final_seq_one_letter_codes)}] "
+                           f"[len of final residue list {len(final_residue_list)}]:\n{final_seq_one_letter_codes}")
 
-                if len(final_residue_list) != len(seqres_seq) and pedantic_mode:
+                if self.pedantic and len(final_residue_list) != len(seqres_seq):
                     raise Exception(
                         f"Somehow the final residue list {len(final_residue_list)} doesn't match the size of the SEQRES seq {len(seqres_seq)}")
 
-                if (len(seqres_seq) != len(final_seq_one_letter_codes) != len(final_residue_list)) and pedantic_mode:
+                if self.pedantic and (len(seqres_seq) != len(final_seq_one_letter_codes) != len(final_residue_list)):
                     raise Exception(
                         'The length of the SEQRES seq != length of final_seq_one_letter_codes != length of final residue list')
 
                 sanity_check = aligned_atom_seq.replace('X', '')
-                if sanity_check != final_seq_one_letter_codes and pedantic_mode:
+                if self.pedantic and sanity_check != final_seq_one_letter_codes:
                     print(f"sanity_check {sanity_check}")
                     print(f"final_seq    {final_seq_one_letter_codes}")
                     count = sum(1 for a, b in zip(sanity_check, final_seq_one_letter_codes) if a != b)
@@ -184,7 +189,8 @@ class ContactMapBuilder:
     def __residue_list_to_contact_map(self, residue_list, length):
         dist_matrix = self.__calc_dist_matrix(residue_list)
         diag = self.__diagnolize_to_fill_gaps(dist_matrix, length)
-        contact_map = self.__create_adj(diag, TEN_ANGSTROMS)
+        #contact_map = self.__create_adj(diag, TEN_ANGSTROMS)
+        contact_map = diag
         return contact_map
 
     def __norm_adj(self, A):

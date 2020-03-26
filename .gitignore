@@ -1,4 +1,8 @@
 *.swp
 .ropeproject
-*out
-PDB90_2020_01_16
+*.out
+*.log
+__pycache__
+
+PDB90
+cluster_scripts

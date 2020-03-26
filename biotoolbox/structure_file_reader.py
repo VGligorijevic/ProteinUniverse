@@ -89,11 +89,11 @@ def build_structure_container_for_pdb(structure_data):
 
     seq_res_info = PdbSeqResDataParser(temp, parser_mode)
     temp.seek(0, 0)
-    try:
-        atom_info = PdbAtomDataParser(temp, parser_mode)
-    except ValueError:
-        # For some reason we literally just can't parse it...
-        raise ValueError('Biopython doesn\'t know how to parse this PDB')
+    #try:
+    atom_info = PdbAtomDataParser(temp, parser_mode)
+    #except ValueError:
+    #    # For some reason we literally just can't parse it...
+    #    raise ValueError('Biopython doesn\'t know how to parse this PDB')
 
     if len(seq_res_info.idx_to_chain) == len(atom_info.idx_to_chain) \
             and set(seq_res_info.idx_to_chain.values()) != set(atom_info.idx_to_chain.values()):
