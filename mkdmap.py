@@ -66,11 +66,9 @@ if __name__ == '__main__':
         dmap  = make_distance_map(pdbfile)
 
         stem  = pdbfile.stem
+        chain = list(dmap.keys())[0] 
         fsa  = args.outputs / 'fastas' / f"{stem}.fsa"
         tnsr = args.outputs / 'tensors' / f"{stem}.pt"
-    
-        assert len(dmap) == 1
-        chain = list(dmap.keys())[0]
         chainmap = dmap[chain]['contact-map']
         seq      = str(dmap[chain]['seq'])
 
@@ -79,4 +77,3 @@ if __name__ == '__main__':
             print(seq, file=fsh)
 
         torch.save(torch.from_numpy(chainmap), tnsr) 
-                
