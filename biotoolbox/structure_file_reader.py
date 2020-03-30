@@ -53,9 +53,11 @@ class StructureContainer:
 
     def with_id_code(self, id_code):
         self.id_code = id_code
+        return self
 
     def with_structure(self, structure):
         self.structure = structure
+        return self
 
     def with_chain(self, chain_name, seqres_seq, atom_seq):
         chain_info = {'seqres-seq': seqres_seq, 'atom-seq': atom_seq}
@@ -64,12 +66,17 @@ class StructureContainer:
         else:
             chain_info['seq'] = atom_seq
         self.chains[chain_name] = chain_info
+        return self
+
+    def with_seqres(self,seqres_seq):
+        for chain_name in self.chains:
+            self.chains[chain_name]['seqres-seq'] = seqres_seq
+        return self
 
     def toJSON(self):
         result = {'chain_info': self.chains, 'id_code': self.id_code}
         return json.dumps(result, default=lambda o: o.__dict__,
                           sort_keys=True, indent=4, skipkeys=True)
-
 
 def build_structure_container_for_pdb(structure_data):
     # Test the data to see if this looks like a PDB or an mmCIF

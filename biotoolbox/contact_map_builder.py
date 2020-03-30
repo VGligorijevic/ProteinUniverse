@@ -3,10 +3,11 @@ from Bio import Align
 from Bio.Data.SCOPData import protein_letters_3to1
 from Bio.SeqUtils import seq1
 
-TEN_ANGSTROMS = 10.0
+TEN_ANGSTROMS     = 10.0
 ALIGNED_BY_SEQRES = 'aligned by SEQRES'
-ATOMS_ONLY = 'ATOM lines only'
-
+ATOMS_ONLY        = 'ATOM lines only'
+INCOMPARABLE_PAIR = 10000.
+KEY_NOT_FOUND     = 1000.
 
 class ContactMapContainer:
     def __init__(self):
@@ -42,9 +43,18 @@ def correct_residue(x, target):
 
 
 class DistanceMapBuilder:
-    def __init__(self, verbose=True, pedantic=True):
+    def __init__(self, 
+                 atom="CA",
+                 verbose=True,
+                 pedantic=True,
+                 glycine_hack=-1):
+
         self.verbose = verbose
         self.pedantic = pedantic
+        self.set_atom(atom)
+        if not isinstance(glycine_hack, (int, float)):
+            raise ValueError(f"{glycine_hack} is not an int")
+        self.glycine_hack = glycine_hack
 
     def speak(self, *args, **kwargs):
         """
@@ -52,6 +62,16 @@ class DistanceMapBuilder:
         """
         if self.verbose:
             print(*args, **kwargs)
+
+    def set_atom(self, atom):
+        if atom.casefold() not in ['ca', 'cb']:
+            raise ValueError(f"{atom.casefold()} not 'ca' or 'cb'")
+        self.__atom = atom.upper()
+        return self
+
+    @property
+    def atom(self):
+        return self.__atom
     
     def generate_map_for_pdb(self, structure_container):
 
@@ -67,7 +87,7 @@ class DistanceMapBuilder:
             if chain['seqres-seq'] is not None and len(chain['seqres-seq']) > 0:
                 contact_maps.with_method_for_chain(chain_name, ALIGNED_BY_SEQRES)
                 seqres_seq = chain['seqres-seq']
-                atom_seq = chain['atom-seq']
+                atom_seq   = chain['atom-seq']
 
                 alignment = aligner.align(seqres_seq, atom_seq)
                 specific_alignment = next(alignment)
@@ -80,17 +100,13 @@ class DistanceMapBuilder:
                 # It's actually much easier to just have biopython generate the string alignment
                 # and use that as a guide.
                 pattern = specific_alignment.__str__().split("\n")
-                aligned_seqres_seq = pattern[0]
-                mask = pattern[1]
-                aligned_atom_seq = pattern[2]
+                aligned_seqres_seq, mask, aligned_atom_seq = pattern[:3]
 
                 # Build a list of residues that we do have atoms for.
-                reindexed_residues = []
-                residues = model[chain_name].get_residues()
-                for r in residues:
-                    reindexed_residues.append(r)
-
+                residues           = model[chain_name].get_residues()
+                reindexed_residues = list(model[chain_name].get_residues())
                 final_residue_list = []
+
                 picked_residues = 0
                 non_canonicals_or_het = 0
 
@@ -217,22 +233,36 @@ class DistanceMapBuilder:
         return A
 
     def __calc_residue_dist(self, residue_one, residue_two):
-        """Returns the C-alpha distance between two residues"""
-        if residue_one is None:
-            return 10000.0
-        if residue_two is None:
-            return 10000.0
+        """Returns the `self.atom` distance between two residues"""
+        if bool({residue_one, residue_two} & {None}): 
+            return INCOMPARABLE_PAIR
         try:
-            diff_vector = residue_one["CA"].coord - residue_two["CA"].coord
-            return np.sqrt(np.sum(diff_vector * diff_vector))
+            dist = self.__euclidean(residue_one, self.atom,
+                                    residue_two, self.atom)
         except KeyError:
-            return 1000.0
+            if self.atom == "CB":
+                if self.glycine_hack < 0: # CA-mode for CB+GLY
+                    try:
+                        dist = self.__euclidean(residue_one,'CA',
+                                                residue_two,'CA')
+                    except KeyError:
+                        dist = KEY_NOT_FOUND
+                else:
+                    dist = self.glycine_hack
+            else:
+                dist = KEY_NOT_FOUND
+        return dist
+                
+    def __euclidean(self, res1, atom1, res2, atom2):
+        diff = res1[atom1] - res2[atom2]
+        return np.sqrt(np.sum(diff * diff))
+
 
     def __diagnolize_to_fill_gaps(self, distance_matrix, length):
         # Create CMAP from distance
         A = distance_matrix.copy()
         for i in range(length):
-            if A[i][i] == 10000.0:
+            if A[i][i] == INCOMPARABLE_PAIR:
                 A[i][i] = 1.0
                 try:
                     A[i + 1][i] = 1.0
