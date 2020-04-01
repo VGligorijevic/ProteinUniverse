@@ -54,6 +54,7 @@ def arguments():
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true')
     parser.add_argument('-q', '--quiet', dest='verbose', action='store_false')
 
+    parser.set_defaults(verbose=True)
     return parser.parse_args()
 
 def load_model(model_file,
@@ -84,7 +85,7 @@ def load_contact_map(tensor_file, resolution=10.):
     return tensor
 
 def preprocess_sequence(seq):
-    S = seq2onehot(seq)
+    S = seq2onehot(seq, sub='X')
     S = S.reshape(1, *S.shape)
     S = torch.from_numpy(S).float()
     S = S.to(device) 
@@ -121,7 +122,7 @@ if __name__ == '__main__':
         M = args.outputs
         M.mkdir(exist_ok=True, parents=True)
 
-    skip = N // 1000
+    skip = N // 10000
     clear = f"\r{80 * ' '}\r"
 
     try:
@@ -130,7 +131,6 @@ if __name__ == '__main__':
             A = load_contact_map(tensor_file)
             S = preprocess_sequence(id2seq[structure_id])
             x = F((A, S))[0].cpu().detach().numpy()
-            print(x)
             save_embedding(structure_id, x, M) 
             if args.verbose and ((i and not i % skip) or not i % N):
                 print(f"{clear}{i}/{N}", end='', flush=True)
@@ -139,5 +139,5 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print(f"{clear}Exiting due to user input")
     finally:
-        if M is not None:
+        if isinstance(M, MemoryMappedDatasetWriter):
             M.close()

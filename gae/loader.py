@@ -34,15 +34,20 @@ def load_domain_list(filename):
     return l
 
 
-def seq2onehot(seq):
+def seq2onehot(seq, sub=None):
     """ Create 21-dim 1-hot embedding """
     chars = ['R', 'X', 'S', 'G', 'W', 'I', 'Q', 'A', 'T', 'V', 'K', 'Y', 'C', 'N', 'L', 'F', 'D', 'M', 'P', 'H', 'E', '-']
     vocab_size = len(chars)
     vocab_embed = dict(zip(chars, range(vocab_size)))
 
     # Convert vocab to one-hot
+    if sub is None:
+        extract = lambda x: vocab_embed[x] 
+    else:
+        extract = lambda x: vocab_embed.get(x, None) or vocab_embed[sub]
+
     vocab_one_hot = np.eye(vocab_size)
-    embed_x = [vocab_embed[v] for v in seq]
+    embed_x = [extract(v) for v in seq]
     seqs_x = np.array([vocab_one_hot[j, :] for j in embed_x])
 
     return seqs_x
