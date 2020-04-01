@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 import numpy as np
 
-from biotoolbox import read_fasta
+from biotoolbox import fasta_reader
 from biotoolbox.dbutils import MemoryMappedDatasetWriter
 
 from gae.models import GAE
@@ -43,14 +43,17 @@ def arguments():
     parser.add_argument("-f", "--fasta", dest='fasta', required=True, type=Exists,
                         help="Maps ID to sequence")
     parser.add_argument('-M', '--model-file', type=Exists,
-                        default='GAE_model', help="Name of the GAE model to be loaded.", required=True
+                        default='GAE_model', help="Name of the GAE model to be loaded.", required=True,
                         dest='model_name')
     parser.add_argument("-o", "--output-file", type=Path,
-                        dest='embeddings', help="Output location to dump embeddings.") 
+                        dest='outputs', help="Output location to dump embeddings.") 
     parser.add_argument("--memmap", action='store_true', default=False, 
                         help="Write down embeddings as a memory mapped database rather than separate npz files") 
-    parser.add_argument('-d', '--filter-dims', type=int, dest='filters', type=Nat,
+    parser.add_argument('-d', '--filter-dims', dest='filters', type=Nat,
                         default=[64, 64, 64, 64, 64], nargs='+', help="Dimensions of GCN filters.")
+    parser.add_argument('-v', '--verbose', dest='verbose', action='store_true')
+    parser.add_argument('-q', '--quiet', dest='verbose', action='store_false')
+
     return parser.parse_args()
 
 def load_model(model_file,
@@ -71,10 +74,11 @@ def load_contact_map(tensor_file, resolution=10.):
         :tensor_file (Path or str)
         :resolution  (float) -- angstrom threshold for contact
     """
-    tensor = torch.load(tensor_file) 
+    tensor = torch.load(tensor_file).float()
     tensor[tensor <= resolution] = 1.
     tensor[tensor > resolution]  = 0.
-    tensor = tensor + torch.diag(torch.diagonal(tensor))
+    tensor = tensor - torch.diag(torch.diagonal(tensor))
+    tensor = tensor + torch.eye(tensor.shape[1])
     tensor = tensor.view(-1, *tensor.numpy().shape)
     tensor = tensor.to(device)
     return tensor
@@ -96,10 +100,13 @@ def save_embedding(name, embedding, database):
     else:
         raise ValueError(f"Can't record embeddings to a {type(database)}")
 
+def seqdict(fastafile):
+    return {k.lstrip('>'):v for k, v in fasta_reader(fastafile)}
+
 if __name__ == '__main__':
     args = arguments()
-    F      = load_model(args.model_name, filters=args.filter_dims)
-    id2seq = dict(read_fasta(args.fasta))
+    F      = load_model(args.model_name, filters=args.filters)
+    id2seq = seqdict(args.fasta)
 
     with open(args.inputs, 'r') as f:
         lines = f.readlines()
@@ -114,17 +121,23 @@ if __name__ == '__main__':
         M = args.outputs
         M.mkdir(exist_ok=True, parents=True)
 
-    skip = N // 300
+    skip = N // 1000
     clear = f"\r{80 * ' '}\r"
-    for i, tensor_file in enumerate(paths):
-        structure_id = tensor_file.stem
-        A = load_contact_map(tensor_file)
-        S = preprocess_sequence(id2seq[structure_id])
-        x = F((A, S))[0].cpu().detach().numpy()
-        save_embedding(structure_id, x, M) 
-        if (i and not i % skip) or not i % N:
-            print(f"{clear}{i}/{N}", end='', flush=True)
 
-    if M is not None:
-        M.close()
-    print(f"{clear}Done! ({args.outputs})"
+    try:
+        for i, tensor_file in enumerate(paths):
+            structure_id = tensor_file.stem
+            A = load_contact_map(tensor_file)
+            S = preprocess_sequence(id2seq[structure_id])
+            x = F((A, S))[0].cpu().detach().numpy()
+            print(x)
+            save_embedding(structure_id, x, M) 
+            if args.verbose and ((i and not i % skip) or not i % N):
+                print(f"{clear}{i}/{N}", end='', flush=True)
+
+        print(f"{clear}Done! ({args.outputs})")
+    except KeyboardInterrupt:
+        print(f"{clear}Exiting due to user input")
+    finally:
+        if M is not None:
+            M.close()

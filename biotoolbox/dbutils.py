@@ -66,7 +66,7 @@ class OneToOneMap(object):
 
     def keys(self):
         """Yields all of the text keys"""
-        underlying_query "select prot_id from backward"
+        underlying_query = "select prot_id from backward;"
         c = self.__connection.cursor()
         yield from c.execute(underlying_query)
 

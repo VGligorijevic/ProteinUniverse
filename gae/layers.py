@@ -19,9 +19,9 @@ class GraphConv(nn.Module):
                  device=None):
         super(GraphConv, self).__init__()
         # self.fc = nn.Linear(in_features, out_features, bias=bias, init='xavier')
-        self.weight = Parameter(torch.Tensor(in_features, out_features))
+        self.weight = Parameter(torch.Tensor(in_features, out_features).float())
         if bias:
-            self.bias = Parameter(torch.Tensor(out_features))
+            self.bias = Parameter(torch.Tensor(out_features).float())
         else:
             self.register_parameter('bias', None)
 
