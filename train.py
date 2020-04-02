@@ -1,53 +1,28 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# builtin
+import sys
+import pickle
+import argparse
+from pathlib import Path
+
+# numeric / third-party
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils import data
 
+# local
 from gae.models import GAE
 from gae.models import Embedding
 from gae.loader import load_domain_list, Dataset, collate_padd
 from gae.loader import load_fasta, seq2onehot
 from gae.loader import onehot2seq
 
-import sys
-import pickle
-import argparse
-import numpy as np
-import matplotlib.pyplot as plt
 plt.switch_backend('agg')
-
-
-path = '/mnt/ceph/users/vgligorijevic/ProteinDesign/CATH/'
-domain2seqres = load_fasta(path + 'cath-dataset-nonredundant-S40.fa')
-
-parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, description='PyTorch GAE Training.')
-parser.add_argument('--no-cuda', action='store_true', default=False, help="Enables CUDA training.")
-parser.add_argument('--log-interval', type=int, default=10, help="How many batches to wait before logging training status.")
-parser.add_argument('-dims', '--filter-dims', type=int, default=[64, 128], nargs='+', help="Dimensions of GCN filters.")
-parser.add_argument('-l2', '--l2-reg', type=float, default=1e-4, help="L2 regularization coefficient.")
-parser.add_argument('--lr', type=float, default=0.001, help="Initial learning rate.")
-parser.add_argument('--epochs', type=int, default=20, help="Number of epochs to train.")
-parser.add_argument('--batch-size', type=int, default=64, help="Batch size.")
-parser.add_argument('--model-name', type=str, default='GAE_model', help="Name of the GAE model to be saved.")
-parser.add_argument('--results_dir', type=str, default='./results/', help="Directory to store results.")
-parser.add_argument('--train-list', type=str, default='train_domains.txt', help="List with train structure IDs.")
-parser.add_argument('--test-list', type=str, default='test_domains.txt', help="List with test structure IDs.")
-args = parser.parse_args()
-
-# CUDA for PyTorch
-args.cuda = not args.no_cuda and torch.cuda.is_available()
-device = torch.device("cuda:0" if args.cuda else "cpu")
-
-# load entire list
-domains = load_domain_list(path + 'cath-dataset-nonredundant-S40.list')
-
-np.random.seed(1234)
-np.random.shuffle(domains)
-
-args.train_list = domains[:25000]
-args.valid_list = domains[25000:30000]
-args.test_list = domains[28000:]
-
 
 def plot_losses(train_loss, valid_loss):
     plt.figure()
@@ -89,8 +64,119 @@ def make_valid_step(model, loss_bc, loss_nll):
     # Returns the function that will be called inside the valid loop
     return valid_step
 
+def save_set(filename, S):
+    with open(filename, 'w') as f:
+        print(*S, sep='\n', file=f)
+
+def NumericGreaterThan(bound, numeric_type):
+    """Verifies a float > some number"""
+    def verifier(x):
+        x = numeric_type(x)
+        if x <= bound:
+            raise ValueError(f"{x} is not > {bound}")
+        return x
+    return verifier
+
+Nat          = NumericGreaterThan(0, int)
+NaturalFloat = NumericGreaterThan(0, float)
+
+def arguments():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, description='PyTorch GAE Training.')
+    parser.add_argument('--cuda',
+                        action='store_true',
+                        help="Enables CUDA training.",
+                        dest='cuda')
+
+    parser.add_argument("--no-cuda",
+                        action='store_false',
+                        dest='cuda',
+                        help="Disables CUDA training.")
+
+    parser.add_argument('--log-interval',
+                        type=Nat,
+                        default=10,
+                        help="How many batches to wait before logging training status.")
+
+    parser.add_argument('-dims',
+                        '--filter-dims',
+                        type=Nat,
+                        default=[64, 128],
+                        nargs='+', 
+                        help="Dimensions of GCN filters.")
+
+    parser.add_argument('-l2','--l2-reg',
+                        type=NaturalFloat,
+                        default=1e-4,
+                        help="L2 regularization coefficient.")
+
+    parser.add_argument('--lr',
+                        type=NaturalFloat,
+                        default=0.001,
+                        help="Initial learning rate.")
+
+    parser.add_argument('--epochs',
+                        type=Nat,
+                        default=20,
+                        help="Number of epochs to train.")
+
+    parser.add_argument('--batch-size',
+                        type=Nat,
+                        default=64,
+                        help="Batch size.")
+
+    parser.add_argument('--results_dir', type=Path, default='./results/', help="Directory to dump results and models.")
+
+    #parser.add_argument('--model-name', type=Path, default='GAE_model', help="Name of the GAE model to be saved.")
+    #parser.add_argument('--train-list', type=str, default='train_domains.txt', help="List with train structure IDs.")
+    #parser.add_argument('--test-list', type=str, default='test_domains.txt', help="List with test structure IDs.")
+
+    parser.set_defaults(cuda=True)
+    return parser.parse_args()
+
+
 
 if __name__ == "__main__":
+    path = '/mnt/ceph/users/dberenberg/Data/cath/'
+    domain2seqres = load_fasta(path + 'cath-dataset-nonredundant-S40.fa')
+    
+    args = arguments()
+    args.results_dir.mkdir(exist_ok=True, parents=True)
+    
+    # CUDA for PyTorch
+    args.cuda = args.cuda and torch.cuda.is_available()
+    device = torch.device("cuda:0" if args.cuda else "cpu")
+    
+    # load entire list
+    #domains = load_domain_list(path + 'cath-dataset-nonredundant-S40.list')
+    domains = load_domain_list(Path(path) / 'cath-nr-tensors.list')
+    
+    np.random.seed(1234)
+    np.random.shuffle(domains)
+
+    p_tr = 0.75
+    p_va = 0.15
+    train_idx = int(p_tr*len(domains))
+    val_idx   = int(p_va*train_idx)
+
+    print(train_idx - val_idx, train_idx, len(domains)) 
+
+    args.train_list = domains[:train_idx - val_idx]
+    args.valid_list = domains[train_idx - val_idx:train_idx]
+    args.test_list  = domains[train_idx:]
+
+    #args.train_list = domains[:25000]
+    #args.valid_list = domains[25000:30000]
+    #args.test_list  = domains[28000:]
+
+    save_set(args.results_dir / "train.list", args.train_list)
+    save_set(args.results_dir / "valid.list", args.valid_list)
+    save_set(args.results_dir / "test.list" , args.test_list)
+    args.model_name = f"GAE__"+"-".join(map(str, args.filter_dims)) + f"__lr{args.lr}"
+    args.model_name = args.model_name + f"__batch_size{args.batch_size}"
+    args.model_name = args.model_name + f"__l2{args.l2_reg}"
+
+    args.results_dir = str(args.results_dir) + "/"
+
     print (args.model_name)
     gae = GAE(in_features=22, out_features=args.filter_dims[-1], filters=args.filter_dims, device=device)
     gae.to(device)
@@ -136,10 +222,13 @@ if __name__ == "__main__":
             train_loss += loss
 
             # print statistics
-            if batch_idx % args.log_interval == 0:
-                print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(epoch, batch_idx * args.batch_size, len(training_generator.dataset),
-                                                                               100. * batch_idx / len(training_generator), loss))
-        print('====> Epoch: {} Average train_loss: {:.4f}'.format(epoch, train_loss / len(training_generator)))
+            if not (batch_idx % args.log_interval):
+                print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(epoch,
+                                                                               batch_idx * args.batch_size, 
+                                                                               len(training_generator.dataset),
+                                                                               100. * batch_idx / len(training_generator),
+                                                                               loss), flush=True)
+        print('====> Epoch: {} Average train_loss: {:.4f}'.format(epoch, train_loss / len(training_generator)), flush=True)
         sys.stdout.flush()
         train_loss_list.append(train_loss/len(training_generator))
         with torch.no_grad():
@@ -150,7 +239,7 @@ if __name__ == "__main__":
 
                 loss = valid_step((A_batch, S_batch), (A_batch, S_batch))
                 valid_loss += loss
-        print('====> Epoch: {} Average valid_loss: {:.4f}'.format(epoch, valid_loss / len(validation_generator)))
+        print('====> Epoch: {} Average valid_loss: {:.4f}'.format(epoch, valid_loss / len(validation_generator)), flush=True)
         sys.stdout.flush()
         valid_loss_list.append(valid_loss/len(validation_generator))
 

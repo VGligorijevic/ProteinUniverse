@@ -8,6 +8,7 @@ Embed input C𝛼 distance matrices in structure space.
 import pickle
 import argparse
 from pathlib import Path
+from datetime import datetime
 
 import torch
 import numpy as np
@@ -45,7 +46,7 @@ def arguments():
     parser.add_argument('-M', '--model-file', type=Exists,
                         default='GAE_model', help="Name of the GAE model to be loaded.", required=True,
                         dest='model_name')
-    parser.add_argument("-o", "--output-file", type=Path,
+    parser.add_argument("-o", "--output", type=Path,
                         dest='outputs', help="Output location to dump embeddings.") 
     parser.add_argument("--memmap", action='store_true', default=False, 
                         help="Write down embeddings as a memory mapped database rather than separate npz files") 
@@ -93,7 +94,7 @@ def preprocess_sequence(seq):
 
 def save_embedding(name, embedding, database):
     if isinstance(database, MemoryMappedDatasetWriter):
-        database.set(name, embedding)
+        database.set(name, embedding, commit=True)
     elif isinstance(database, (str, Path)):
         database = Path(database)
         path = database / f"{name}.npz" 
@@ -107,7 +108,8 @@ def seqdict(fastafile):
 if __name__ == '__main__':
     args = arguments()
     F      = load_model(args.model_name, filters=args.filters)
-    id2seq = seqdict(args.fasta)
+    #id2seq = seqdict(args.fasta)
+    id2seq = load_fasta(args.fasta)
 
     with open(args.inputs, 'r') as f:
         lines = f.readlines()
@@ -124,7 +126,8 @@ if __name__ == '__main__':
 
     skip = N // 10000
     clear = f"\r{80 * ' '}\r"
-
+    
+    start = datetime.now()
     try:
         for i, tensor_file in enumerate(paths):
             structure_id = tensor_file.stem
@@ -133,11 +136,12 @@ if __name__ == '__main__':
             x = F((A, S))[0].cpu().detach().numpy()
             save_embedding(structure_id, x, M) 
             if args.verbose and ((i and not i % skip) or not i % N):
-                print(f"{clear}{i}/{N}", end='', flush=True)
+                print(f"{clear}{i}/{N} ({datetime.now() - start} elapsed)", end='', flush=True)
 
-        print(f"{clear}Done! ({args.outputs})")
     except KeyboardInterrupt:
         print(f"{clear}Exiting due to user input")
     finally:
+        elapsed = datetime.now() - start
+        print(f"{clear}Done! ({args.outputs}) ({elapsed} elapsed)")
         if isinstance(M, MemoryMappedDatasetWriter):
             M.close()

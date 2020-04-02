@@ -7,7 +7,7 @@ from Bio import SeqIO
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if use_cuda else "cpu")
 
-path = '/mnt/ceph/users/vgligorijevic/ProteinDesign/CATH/'
+path = '/mnt/ceph/users/dberenberg/Data/cath/'
 
 
 def load_fasta(filename):

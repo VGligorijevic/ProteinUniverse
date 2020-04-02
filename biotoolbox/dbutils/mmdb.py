@@ -10,6 +10,10 @@ from pathlib import Path
 
 import numpy as np
 
+__all__ = ['MemoryMappedDatasetReader',
+           'TemporaryMemmap',
+           'MemoryMappedDatasetWriter',
+           'OneToOneMap', 'save_shard']
 
 def save_shard(array, outfile):
     """
@@ -96,7 +100,8 @@ class OneToOneMap(object):
         query = f"select * from {direction} where {key}=?"
         c = self.__connection.cursor()
         c.execute(query, (id,))
-        return c.fetchone()
+        one = c.fetchone()
+        return one
 
     def open(self):
         CREATE_INDEX_TABLE = """CREATE TABLE IF NOT EXISTS forward (
@@ -163,7 +168,7 @@ class MemoryMappedDatasetWriter(object):
         self.__open = False
         if start:
             self.open()
-
+    
     def open(self):
         """Open the dataset for writing"""
         if not self.__open:
@@ -208,7 +213,7 @@ class MemoryMappedDatasetWriter(object):
     def shardfilename(self):
         return self.shards / f"shards_{self._s:06d}.shrd"
 
-    def set(self, key, value):
+    def set(self, key, value, commit=False):
         """Append an item to the database"""
         reset_shard = False
         if self.__open:
@@ -223,7 +228,7 @@ class MemoryMappedDatasetWriter(object):
 
             self._shard[self._t % self._n] = value 
             # add key
-            self.keydb.add(self._t, key)
+            self.keydb.add(self._t, key, commit=commit)
             self._t += 1 
         return reset_shard
 
@@ -306,19 +311,33 @@ class MemoryMappedDatasetReader(object):
 
     def get(self, key):
         """Retrieve embedding for the input key"""
-        if isinstance(key, str):
-            direction = 'backward'
-        elif isinstance(key, int):
-            direction = 'forward' 
-        else:
-            raise TypeError(f"{type(key)} is not in [str, int]")
         
-        result = self.keydb.retrieve(key, direction=direction)
+        result = self.get_id(key)
+        direction = self.get_direction(key)
+
         if result is None:
             raise ValueError(f"{key} not found")
         
         vector_id = result[0] if direction == 'forward' else result[1]
         return self.__embedding_matrix[vector_id]
+
+    def get_direction(self, key):
+        if isinstance(key, str):
+            direction = 'backward'
+        elif isinstance(key, int):
+            direction = 'forward'
+        else:
+            raise TypeError(f"{type(key)} is not in [str,int]")
+        return direction
+
+
+    def get_id(self, key):
+        direction = self.get_direction(key) 
+        result = self.keydb.retrieve(key, direction=direction)
+        if result is None:
+            raise ValueError(f"{key} not found")
+        return result
+
 
     def __getitem__(self, key):
         return self.get(key)
