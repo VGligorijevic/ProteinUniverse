@@ -13,4 +13,4 @@ python train.py \
     --lr 0.001 \
     --epochs 10 \
     --batch-size 64 \
-    --results_dir ./gae_64x5/ #--model-name GAE_64-64-64-64-64 \
+    --results_dir ./results/gae_64x5 #--model-name GAE_64-64-64-64-64 \

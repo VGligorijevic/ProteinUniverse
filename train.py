@@ -68,6 +68,10 @@ def save_set(filename, S):
     with open(filename, 'w') as f:
         print(*S, sep='\n', file=f)
 
+def load_set(filename):
+    with open(filename, 'r') as f:
+        return list(map(lambda line: line.strip(), f))
+
 def NumericGreaterThan(bound, numeric_type):
     """Verifies a float > some number"""
     def verifier(x):
@@ -125,6 +129,7 @@ def arguments():
                         help="Batch size.")
 
     parser.add_argument('--results_dir', type=Path, default='./results/', help="Directory to dump results and models.")
+    parser.add_argument("--lists", type=Path, default=None, nargs=3, help="train, validation, and test paths in that order")
 
     #parser.add_argument('--model-name', type=Path, default='GAE_model', help="Name of the GAE model to be saved.")
     #parser.add_argument('--train-list', type=str, default='train_domains.txt', help="List with train structure IDs.")
@@ -137,7 +142,10 @@ def arguments():
 
 if __name__ == "__main__":
     path = '/mnt/ceph/users/dberenberg/Data/cath/'
-    domain2seqres = load_fasta(path + 'cath-dataset-nonredundant-S40.fa')
+
+    # load entire list
+    domain2seqres = load_fasta(Path(path) / 'materials' / 'cath-dataset-nonredundant-S40.fa')
+    domains = load_domain_list(Path(path) / 'materials' / 'cath-nr-tensors.list')
     
     args = arguments()
     args.results_dir.mkdir(exist_ok=True, parents=True)
@@ -146,31 +154,30 @@ if __name__ == "__main__":
     args.cuda = args.cuda and torch.cuda.is_available()
     device = torch.device("cuda:0" if args.cuda else "cpu")
     
-    # load entire list
-    #domains = load_domain_list(path + 'cath-dataset-nonredundant-S40.list')
-    domains = load_domain_list(Path(path) / 'cath-nr-tensors.list')
-    
-    np.random.seed(1234)
-    np.random.shuffle(domains)
+    if not args.lists:
+        np.random.seed(104)
+        np.random.shuffle(domains)
 
-    p_tr = 0.75
-    p_va = 0.15
-    train_idx = int(p_tr*len(domains))
-    val_idx   = int(p_va*train_idx)
+        p_tr = 0.75
+        p_va = 0.15
+        train_idx = int(p_tr*len(domains))
+        val_idx   = int(p_va*train_idx)
 
-    print(train_idx - val_idx, train_idx, len(domains)) 
+        print(train_idx - val_idx, train_idx, len(domains)) 
 
-    args.train_list = domains[:train_idx - val_idx]
-    args.valid_list = domains[train_idx - val_idx:train_idx]
-    args.test_list  = domains[train_idx:]
-
-    #args.train_list = domains[:25000]
-    #args.valid_list = domains[25000:30000]
-    #args.test_list  = domains[28000:]
+        args.train_list = domains[:train_idx - val_idx]
+        args.valid_list = domains[train_idx - val_idx:train_idx]
+        args.test_list  = domains[train_idx:]
+    else:
+        trn, val, tes = map(load_set, args.lists)
+        args.train_list = trn
+        args.valid_list = val
+        args.test_list  = tes
 
     save_set(args.results_dir / "train.list", args.train_list)
     save_set(args.results_dir / "valid.list", args.valid_list)
     save_set(args.results_dir / "test.list" , args.test_list)
+
     args.model_name = f"GAE__"+"-".join(map(str, args.filter_dims)) + f"__lr{args.lr}"
     args.model_name = args.model_name + f"__batch_size{args.batch_size}"
     args.model_name = args.model_name + f"__l2{args.l2_reg}"

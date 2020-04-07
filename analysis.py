@@ -30,7 +30,11 @@ test_set    = PU / "gae_64x5" / "test.list"
 structures  = PU / "Data" / "cath" / "cath-dataset-nr-S40" 
 
 topk_distances = home / "topk_distances.tsv"
+tmalign_files  = home / "tmscores"
+tmalign_files.mkdir(exist_ok=True, parents=True)
 
+tmalign = (PU / "dependencies" / "bin" / "TMAlign").absolute()
+tmalign_tasks = home / "compute_tmscores.tsk"
 
 if __name__ == '__main__':
     N = 300
@@ -50,7 +54,7 @@ if __name__ == '__main__':
     db = load_knn_db(PU / "Data" / "cath" / "database")
     start = datetime.now()
     if not topk_distances.exists():
-        with open(topk_distances, 'w') as tsv:
+        with open(topk_distances, 'w') as tsv, open(tmalign_tasks:
             writer = csv.DictWriter(tsv, fieldnames=['query', 'neighbor', 'neighbor_rank', 'distance'], delimiter='\t')
             writer.writeheader()
             for i, samp in enumerate(samps):
@@ -61,5 +65,4 @@ if __name__ == '__main__':
                     writer.writerow(row)
                 print(f"{samp} ({i}/{N}) ({datetime.now() - start} elapsed)")
         print(f"Done! ({datetime.now() - start} elapsed)")
-
-
+    print("done")
