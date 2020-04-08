@@ -124,7 +124,12 @@ if __name__ == '__main__':
         M = args.outputs
         M.mkdir(exist_ok=True, parents=True)
 
-    skip = N // 10000
+    mag  = 10000
+    while not N // mag:
+        mag //= 10
+
+    skip = N // mag
+    print(skip, mag, N, flush=True)
     clear = f"\r{80 * ' '}\r"
     
     start = datetime.now()
@@ -135,7 +140,7 @@ if __name__ == '__main__':
             S = preprocess_sequence(id2seq[structure_id])
             x = F((A, S))[0].cpu().detach().numpy()
             save_embedding(structure_id, x, M) 
-            if args.verbose and ((i and not i % skip) or not i % N):
+            if all((args.verbose, i)) and any((not i % skip, not i % N)):
                 print(f"{clear}{i}/{N} ({datetime.now() - start} elapsed)", end='', flush=True)
 
     except KeyboardInterrupt:

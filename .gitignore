@@ -1,13 +1,18 @@
+
 *.swp
-.ropeproject
 *.out
 *.log
-__pycache__
-*.py[cxo]
 *.dat
-integrity_analysis/
-results/
 *.list
+.ropeproject
+
+*.py[cxo]
+__pycache__
+
+results/
+databases/
+integrity_analysis/
+
 
 PDB90
 Data
