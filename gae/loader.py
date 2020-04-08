@@ -21,7 +21,7 @@ def load_fasta(filename):
         domain2seq[entry] = seq
     return domain2seq
 
-domain2seqres = load_fasta(path + 'cath-dataset-nonredundant-S40.fa')
+domain2seqres = load_fasta(path + 'materials/' + 'cath-dataset-nonredundant-S40.fa')
 
 
 def load_domain_list(filename):

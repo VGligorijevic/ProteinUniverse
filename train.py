@@ -145,7 +145,7 @@ if __name__ == "__main__":
 
     # load entire list
     domain2seqres = load_fasta(Path(path) / 'materials' / 'cath-dataset-nonredundant-S40.fa')
-    domains = load_domain_list(Path(path) / 'materials' / 'cath-nr-tensors.list')
+    domains = load_domain_list(Path(path) / 'materials' / 'annotated-cath-S40-domains.list')
     
     args = arguments()
     args.results_dir.mkdir(exist_ok=True, parents=True)
@@ -163,7 +163,7 @@ if __name__ == "__main__":
         train_idx = int(p_tr*len(domains))
         val_idx   = int(p_va*train_idx)
 
-        print(train_idx - val_idx, train_idx, len(domains)) 
+        print(train_idx - val_idx, train_idx, len(domains), flush=True) 
 
         args.train_list = domains[:train_idx - val_idx]
         args.valid_list = domains[train_idx - val_idx:train_idx]
@@ -184,7 +184,7 @@ if __name__ == "__main__":
 
     args.results_dir = str(args.results_dir) + "/"
 
-    print (args.model_name)
+    print(args.model_name, flush=True)
     gae = GAE(in_features=22, out_features=args.filter_dims[-1], filters=args.filter_dims, device=device)
     gae.to(device)
 
