@@ -47,9 +47,9 @@ def arguments():
                         default='GAE_model', help="Name of the GAE model to be loaded.", required=True,
                         dest='model_name')
     parser.add_argument("-o", "--output", type=Path,
-                        dest='outputs', help="Output location to dump embeddings.") 
-    parser.add_argument("--memmap", action='store_true', default=False, 
-                        help="Write down embeddings as a memory mapped database rather than separate npz files") 
+                        dest='outputs', help="Output location to dump embeddings.")
+    parser.add_argument("--memmap", action='store_true', default=False,
+                        help="Write down embeddings as a memory mapped database rather than separate npz files")
     parser.add_argument('-d', '--filter-dims', dest='filters', type=Nat,
                         default=[64, 64, 64, 64, 64], nargs='+', help="Dimensions of GCN filters.")
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true')
@@ -62,7 +62,7 @@ def load_model(model_file,
                filters=[64, 64, 64, 64, 64]):
     """Load pretrained GAE model"""
     gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
-    gae.load_state_dict(torch.load(model_file))
+    gae.load_state_dict(torch.load(model_file), strict=False)
     gae.to(device)
     gae.eval()
     F = Embedding(gae)
@@ -71,7 +71,7 @@ def load_model(model_file,
 def load_contact_map(tensor_file, resolution=10.):
     """
     Load a distance matrix saved as a torch tensor. Apply
-    standard preprocessing to convert to contact map. 
+    standard preprocessing to convert to contact map.
     args:
         :tensor_file (Path or str)
         :resolution  (float) -- angstrom threshold for contact
@@ -89,7 +89,7 @@ def preprocess_sequence(seq):
     S = seq2onehot(seq, sub='X')
     S = S.reshape(1, *S.shape)
     S = torch.from_numpy(S).float()
-    S = S.to(device) 
+    S = S.to(device)
     return S
 
 def save_embedding(name, embedding, database):
@@ -97,7 +97,7 @@ def save_embedding(name, embedding, database):
         database.set(name, embedding, commit=True)
     elif isinstance(database, (str, Path)):
         database = Path(database)
-        path = database / f"{name}.npz" 
+        path = database / f"{name}.npz"
         np.savez_compressed(path,embedding=embedding)
     else:
         raise ValueError(f"Can't record embeddings to a {type(database)}")
@@ -131,7 +131,7 @@ if __name__ == '__main__':
     skip = N // mag
     print(skip, mag, N, flush=True)
     clear = f"\r{80 * ' '}\r"
-    
+
     start = datetime.now()
     try:
         for i, tensor_file in enumerate(paths):
@@ -139,7 +139,7 @@ if __name__ == '__main__':
             A = load_contact_map(tensor_file)
             S = preprocess_sequence(id2seq[structure_id])
             x = F((A, S))[0].cpu().detach().numpy()
-            save_embedding(structure_id, x, M) 
+            save_embedding(structure_id, x, M)
             if all((args.verbose, i)) and any((not i % skip, not i % N)):
                 print(f"{clear}{i}/{N} ({datetime.now() - start} elapsed)", end='', flush=True)
 

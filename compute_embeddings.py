@@ -29,7 +29,7 @@ domains = domains[:3000]
 
 # load a pre-trained GAE model
 gae = GAE(in_features=22, out_features=args.filter_dims[-1], filters=args.filter_dims, device=device)
-gae.load_state_dict(torch.load(args.model_name))
+gae.load_state_dict(torch.load(args.model_name), strict=False)
 gae.to(device)
 gae.eval()
 

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import GraphConv, InnerProductDecoder
+from .layers import MultiGraphConv, InnerProductDecoder
 
 
 class GAE(nn.Module):
@@ -19,27 +19,38 @@ class GAE(nn.Module):
         super(GAE, self).__init__()
         self.filters = filters
 
+        # Sequence embedding
+        self.seq_embedd = nn.Sequential(nn.Linear(in_features, self.filters[0]), nn.ReLU(inplace=True))
+
         # Encoder
-        self.encoder = nn.Sequential(*([GraphConv(in_features=in_features if layer == 0 else filters[layer - 1],
-                                                  out_features=f,
-                                                  bnorm=True,
-                                                  activation=nn.ReLU(inplace=True),
-                                                  bias=bias,
-                                                  adj_sq=adj_sq,
-                                                  scale_identity=scale_identity,
-                                                  device=device) for layer, f in enumerate(self.filters)]))
+        """
+        self.cmap_encoder = nn.Sequential(*([GraphConv(in_features=in_features if layer == 0 else self.filters[layer - 1],
+                                                       out_features=f,
+                                                       bnorm=True,
+                                                       activation=nn.ReLU(inplace=True),
+                                                       bias=bias,
+                                                       adj_sq=adj_sq,
+                                                       scale_identity=scale_identity,
+                                                       device=device) for layer, f in enumerate(self.filters)]))
+        """
+        self.cmap_encoder = nn.Sequential(*([MultiGraphConv(in_features=self.filters[0] if layer == 0 else self.filters[layer - 1],
+                                                            out_features=f,
+                                                            bnorm=True,
+                                                            activation=nn.ReLU(inplace=True),
+                                                            bias=bias,
+                                                            device=device) for layer, f in enumerate(self.filters)]))
 
         # Decoder
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
-        self.seq_decoder = nn.Linear(sum(self.filters), out_features=22)
-        self.log_softmax = nn.LogSoftmax(dim=-1)
+        self.seq_decoder = nn.Sequential(nn.Linear(sum(self.filters), out_features=in_features), nn.LogSoftmax(dim=-1))
 
     def forward(self, data):
-        gcn_embedd = [nn.Sequential(*list(self.encoder.children())[:i+1])(data)[1] for i in range(0, len(self.filters))]
-        # x = self.encoder(data)[1]
+        A, S = data
+        S = self.seq_embedd(S)
+        gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(0, len(self.filters))]
         x = torch.cat(gcn_embedd, -1)
         cmap_out = self.cmap_decoder(x)
-        seq_out = self.log_softmax(self.seq_decoder(x))
+        seq_out = self.seq_decoder(x)
         return cmap_out, seq_out
 
 
@@ -49,10 +60,12 @@ class Embedding(nn.Module):
     """
     def __init__(self, original_model):
         super(Embedding, self).__init__()
-        self.num = len(list(original_model.children())[0])
-        self.gcn_layers = [nn.Sequential(*list(original_model.children())[0][:i]) for i in range(1, self.num+1)]
+        self.seq_embedd = original_model.seq_embedd
+        self.cmap_encoder = original_model.cmap_encoder
+        self.num = len(list(self.cmap_encoder))
+        self.gcn_layers = [self.cmap_encoder[:i] for i in range(1, self.num + 1)]
 
     def forward(self, x):
-        x = [self.gcn_layers[i](x)[1].sum(axis=1) for i in range(0, self.num)]
-        x = torch.cat(x, -1)
+        x = [self.gcn_layers[i]((x[0], self.seq_embedd(x[1])))[1] for i in range(0, self.num)]
+        x = torch.cat(x, -1).sum(axis=1)
         return x
