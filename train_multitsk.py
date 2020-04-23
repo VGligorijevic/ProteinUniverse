@@ -7,6 +7,7 @@ import pickle
 import shutil
 import argparse
 from pathlib import Path
+from collections import Counter
 
 # numeric / third-party
 import numpy as np
@@ -67,13 +68,13 @@ def make_collate_padd(n_classes):
         A_padded = torch.zeros((len(batch), max_len, max_len))
         S_padded = torch.zeros((len(batch), max_len, 22))
         S_padded[:, :, 21] = 1
-        c_ = torch.zeros((len(batch),n_classes), dtype=torch.long)
+        c_ = torch.zeros((len(batch),), dtype=torch.long)
         # padd
         for i in range(len(batch)):
             A_padded[i][:lengths[i], :][:, :lengths[i]] = batch[i][0]
             S_padded[i][:lengths[i], :] = batch[i][1]
             c_idx = batch[i][2]
-            c_[i][c_idx] = 1.
+            c_[i] = c_idx
         return (A_padded, S_padded, c_)
     return collate_padd
 
@@ -90,6 +91,7 @@ class MultitaskGAE(nn.Module):
                  bias=False,
                  adj_sq=False,
                  scale_identity=False,
+                 drop_prob=0.25,
                  device=None):
         super(MultitaskGAE, self).__init__()
         
@@ -120,6 +122,8 @@ class MultitaskGAE(nn.Module):
         # Decoder
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
         self.classifier   = nn.Linear(sum(self.filters), out_features=self.n_classes)
+        self.log_softmax  = nn.LogSoftmax(dim=-1)
+        self.drop = nn.Dropout(p=drop_prob)
         
         #self.seq_decoder = nn.Sequential(nn.Linear(sum(self.filters), out_features=in_features), nn.LogSoftmax(dim=-1))
 
@@ -128,9 +132,27 @@ class MultitaskGAE(nn.Module):
         gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(0, len(self.filters))]
         x = torch.cat(gcn_embedd, -1)
         cmap_out  = self.cmap_decoder(x)
-        class_out = self.classifier(x)
-
+        x_sum = x.sum(axis=1)
+        class_input = self.drop(x_sum)
+        class_oh  = self.classifier(class_input)
+        class_out = self.log_softmax(class_oh) 
         return cmap_out, class_out
+
+class Embedding(nn.Module):
+    """
+    Extracting embeddings from the GraphConv layers of a pre-trained model.
+    """
+    def __init__(self, original_model):
+        super(Embedding, self).__init__()
+        self.cmap_encoder = original_model.cmap_encoder
+        self.num = len(list(self.cmap_encoder))
+        self.gcn_layers = [self.cmap_encoder[:i] for i in range(1, self.num + 1)]
+
+    def forward(self, x):
+        A, S = x
+        gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(self.num)]
+        x = torch.cat(gcn_embedd, -1)
+        return x
 
 
 
@@ -271,24 +293,26 @@ def generate_lists(domains):
 
 
 def plot_losses(title, filename, train_loss, valid_loss):
-    train_avg, train_std = zip(*train_loss)
-    valid_avg, valid_std = zip(*valid_loss)
     
-    train_avg, train_std = map(np.array, (train_avg, train_std))
-    valid_avg, valid_std = map(np.array, (valid_avg, valid_std))
     
     plt.figure()
-    plt.fill_between(train_avg, train_avg - train_std, train_avg + train_std, alpha=0.25, color='C0')
-    plt.plot(train_avg, '-', color='C0', label='Validation')
-
-    plt.fill_between(valid_avg, valid_avg - valid_std, valid_avg + valid_std, alpha=0.25, color='C1')
-    plt.plot(train_avg, '-', color='C1', label='Train')
+    plt.plot(train_loss, '-', color='C0', label='Train')
+    plt.plot(valid_loss, '-', color='C1', label='Validation')
 
     plt.title(title)
     plt.ylabel('(average) loss')
     plt.xlabel('epoch')
     plt.legend(loc='upper left')
     plt.savefig(filename, bbox_inches='tight')
+
+def compute_class_weights(labels):
+    counts = Counter(labels)
+    mx = max(counts.values())
+    weights = torch.zeros(len(counts)) 
+    for cls, ct in counts.items():
+        weights[cls] = float(mx/ct)
+    weights.to(device)
+    return weights
 
 if __name__ == "__main__":
     path = '/mnt/ceph/users/dberenberg/Data/cath/'
@@ -314,6 +338,7 @@ if __name__ == "__main__":
     # CUDA for PyTorch
     args.cuda = args.cuda and torch.cuda.is_available()
     device = torch.device("cuda:0" if args.cuda else "cpu")
+    weights = compute_class_weights(cath_annotation_frame['class'].values)
     
     # making/recording train/validation/test tests
     if not args.lists:
@@ -336,7 +361,7 @@ if __name__ == "__main__":
 
     # loss functions
     loss_bc  = nn.BCELoss() # classify contact
-    loss_nll = nn.CrossEntropyLoss() # classify cath class
+    loss_nll = nn.NLLLoss(weight=weights) # classify cath class
     loss_bc.cuda()
     loss_nll.cuda()
 
@@ -376,14 +401,14 @@ if __name__ == "__main__":
     T, V = map(len, (training_generator, validation_generator)) 
     N = len(training_generator.dataset)
     for epoch in range(1, args.epochs + 1):
-        epoch_train_loss = []
+        train_loss = 0.
         for batch_idx, (A_batch, S_batch, C_batch) in enumerate(training_generator):
             A_batch = A_batch.to(device)
             S_batch = S_batch.to(device)
             C_batch = C_batch.to(device)
 
             loss = train_step((A_batch, S_batch), (A_batch, C_batch))
-            epoch_train_loss.append(loss)
+            train_loss += loss
 
             # print statistics
             if not (batch_idx % args.log_interval):
@@ -391,31 +416,29 @@ if __name__ == "__main__":
                 pct = 100. * batch_idx / T
                 print(f"[*] (train) epoch {epoch} [{progress:5d}/{N:5d} ({pct:5.2f}%)]\tloss: {loss:0.6f}", flush=True)
 
-        avg_train_loss = np.mean(epoch_train_loss)
-        std_train_loss = np.std(epoch_train_loss)
-        print(f"[!] E{epoch:3d}) average training loss: {avg_train_loss:0.4f}, std training loss: {std_train_loss:0.4f}", flush=True)
+        avg_train_loss = train_loss / len(training_generator)
+        print(f"[!] E{epoch:3d}) average training loss: {avg_train_loss:0.4f}", flush=True)
         sys.stdout.flush()
-        train_loss_list.append((avg_train_loss, std_train_loss))
+        train_loss_list.append(avg_train_loss)
         with torch.no_grad():
-            epoch_valid_loss = []
+            valid_loss = 0.
             for batch_idx, (A_batch, S_batch, C_batch) in enumerate(validation_generator):
                 A_batch = A_batch.to(device)
                 S_batch = S_batch.to(device)
                 C_batch = C_batch.to(device)
 
                 loss = valid_step((A_batch, S_batch), (A_batch, C_batch))
-                epoch_valid_loss.append(loss)
+                valid_loss += loss
 
-        avg_valid_loss = np.mean(epoch_valid_loss)
-        std_valid_loss = np.std(epoch_valid_loss)
+        avg_valid_loss = valid_loss / len(validation_generator)
         if avg_valid_loss < best_valid_loss:
             # save the model
             best_model_name = model_name_fmt.format(valid_loss=avg_valid_loss)
             torch.save(gae.state_dict(), args.models_dir + best_model_name + '_model.pt')
 
-        print(f"[!] E{epoch:3d}) average validation loss: {avg_valid_loss:0.4f}, std validation loss: {std_valid_loss:0.4f}", flush=True)
+        print(f"[!] E{epoch:3d}) average validation loss: {avg_valid_loss:0.4f}", flush=True)
         sys.stdout.flush()
-        valid_loss_list.append((avg_valid_loss, std_valid_loss))
+        valid_loss_list.append(avg_valid_loss)
 
     # plot lossess
     title = f"Model loss: {filter_string}"
@@ -425,7 +448,7 @@ if __name__ == "__main__":
     shutil.copyfile(args.models_dir + best_model_name + '_model.pt', args.results_dir + 'final.pt')
     # record the losses
     with open(args.results_dir + 'loss.tsv', 'w') as lossfile:
-        print("epoch", "train","train_std", "val", "val_std", sep='\t', file=lossfile)
-        for epoch, ((tavg, tstd), (vavg, vstd)) in enumerate(zip(train_loss_list, valid_loss_list)):
-            print(epoch, tavg, tstd, vavg, vstd, sep='\t', file=lossfile)
+        print("epoch", "train","val", sep='\t', file=lossfile)
+        for epoch, (tavg, vavg) in enumerate(zip(train_loss_list, valid_loss_list)):
+            print(epoch, tavg, vavg, sep='\t', file=lossfile)
 

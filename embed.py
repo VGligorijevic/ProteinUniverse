@@ -16,8 +16,8 @@ import numpy as np
 from biotoolbox import fasta_reader
 from biotoolbox.dbutils import MemoryMappedDatasetWriter
 
-from gae.models import GAE
-from gae.models import Embedding
+from train_multitsk import MultitaskGAE, Embedding
+#from gae.models import Embedding, GAE
 from gae.loader import load_domain_list
 from gae.loader import load_fasta, seq2onehot
 
@@ -61,7 +61,8 @@ def arguments():
 def load_model(model_file,
                filters=[64, 64, 64, 64, 64]):
     """Load pretrained GAE model"""
-    gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
+    #gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
+    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=1377, device=device)
     gae.load_state_dict(torch.load(model_file), strict=False)
     gae.to(device)
     gae.eval()
@@ -107,7 +108,9 @@ def seqdict(fastafile):
 
 if __name__ == '__main__':
     args = arguments()
+    print(args.model_name)
     F      = load_model(args.model_name, filters=args.filters)
+    print(F.__class__.__name__)
     #id2seq = seqdict(args.fasta)
     id2seq = load_fasta(args.fasta)
 

@@ -12,10 +12,10 @@ source $HOME/.node_allocation/load_gpu_modules
 conda activate protuniv
 
 python train_multitsk.py \
-    --filter-dims 64 64 64 \
+    --filter-dims 64 128 128 256 \
     --l2-reg 5e-6 \
     --lr 0.001 \
-    --epochs 25 \
+    --epochs 30 \
     --batch-size 64 \
     --lists lists/train.list lists/valid.list lists/test.list \
-    --results_dir ./results/gae_64x3_multitask_e25_test #--model-name GAE_64-64-64-64-64 \
+    --results_dir ./results/64-128-128-256 #--model-name GAE_64-64-64-64-64 \
