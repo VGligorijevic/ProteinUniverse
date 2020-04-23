@@ -18,4 +18,4 @@ python train_multitsk.py \
     --epochs 25 \
     --batch-size 64 \
     --lists lists/train.list lists/valid.list lists/test.list \
-    --results_dir ./results/gae_64x3_multitask_e25 #--model-name GAE_64-64-64-64-64 \
+    --results_dir ./results/gae_64x3_multitask_e25_test #--model-name GAE_64-64-64-64-64 \

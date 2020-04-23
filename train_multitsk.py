@@ -4,6 +4,7 @@
 # builtin
 import sys
 import pickle
+import shutil
 import argparse
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def make_collate_padd(n_classes):
         A_padded = torch.zeros((len(batch), max_len, max_len))
         S_padded = torch.zeros((len(batch), max_len, 22))
         S_padded[:, :, 21] = 1
-        c_ = torch.zeros((len(batch), n_classes), dtype=torch.long)
+        c_ = torch.zeros((len(batch),n_classes), dtype=torch.long)
         # padd
         for i in range(len(batch)):
             A_padded[i][:lengths[i], :][:, :lengths[i]] = batch[i][0]
@@ -119,6 +120,7 @@ class MultitaskGAE(nn.Module):
         # Decoder
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
         self.classifier   = nn.Linear(sum(self.filters), out_features=self.n_classes)
+        
         #self.seq_decoder = nn.Sequential(nn.Linear(sum(self.filters), out_features=in_features), nn.LogSoftmax(dim=-1))
 
     def forward(self, data):
@@ -127,26 +129,18 @@ class MultitaskGAE(nn.Module):
         x = torch.cat(gcn_embedd, -1)
         cmap_out  = self.cmap_decoder(x)
         class_out = self.classifier(x)
+
         return cmap_out, class_out
 
-def plot_losses(train_loss, valid_loss):
-    plt.figure()
-    plt.plot(train_loss, '-')
-    plt.plot(valid_loss, '-')
-    plt.title('model loss')
-    plt.ylabel('loss')
-    plt.xlabel('epoch')
-    plt.legend(['train', 'validation'], loc='upper left')
-    plt.savefig(args.results_dir + args.model_name + '_model_loss.png', bbox_inches='tight')
 
 
-def make_train_step(model, loss_bc, loss_ce, optimizer):
+def make_train_step(model, loss_bc, loss_nll, optimizer):
     """
     Builds function that performs a step in the train loop
     args:
         :model - model to be trained
         :loss_bc - contact prediction loss
-        :loss_ce - cath class prediction loss
+        :loss_nll - cath class prediction loss
         :optimizer - pytorch optimizer
     returns:
         :(callable) - train step function
@@ -155,7 +149,7 @@ def make_train_step(model, loss_bc, loss_ce, optimizer):
         model.train()
         optimizer.zero_grad()
         cmap_hat, class_hat = model(x)
-        loss = loss_bc(cmap_hat, y[0]) + loss_ce(class_hat, y[1])
+        loss = loss_bc(cmap_hat, y[0]) + loss_nll(class_hat, y[1])
         #loss = loss_bc(cmap_hat, y[0]) + loss_nll(seq_hat.view(-1, 22), torch.argmax(y[1], dim=2).view(-1))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -167,13 +161,13 @@ def make_train_step(model, loss_bc, loss_ce, optimizer):
     return train_step
 
 
-def make_valid_step(model, loss_bc, loss_ce):
+def make_valid_step(model, loss_bc, loss_nll):
     """
     Builds function that performs a step in the valid loop
     args:
         :model - model to be trained
         :loss_bc - contact prediction loss
-        :loss_ce - cath class prediction loss
+        :loss_nll - cath class prediction loss
     returns:
         :(callable) - train step function
 
@@ -182,7 +176,7 @@ def make_valid_step(model, loss_bc, loss_ce):
     def valid_step(x, y):
         model.eval()
         cmap_hat, class_hat = model(x)
-        loss = loss_bc(cmap_hat, y[0]) + loss_ce(class_hat, y[1])
+        loss = loss_bc(cmap_hat, y[0]) + loss_nll(class_hat, y[1])
         #loss = loss_bc(cmap_hat, y[0]) + loss_nll(seq_hat.view(-1, 22), torch.argmax(y[1], dim=2).view(-1))
 
         return loss.item()
@@ -260,7 +254,41 @@ def arguments():
     parser.set_defaults(cuda=True)
     return parser.parse_args()
 
+def generate_lists(domains):
+    np.random.seed(104)
+    np.random.shuffle(domains)
 
+    p_tr, p_va = 0.75,  0.15
+    train_idx = int(p_tr*len(domains))
+    val_idx   = int(p_va*train_idx)
+
+    print(train_idx - val_idx, train_idx, len(domains), flush=True) 
+
+    train_list = domains[:train_idx - val_idx]
+    valid_list = domains[train_idx - val_idx:train_idx]
+    test_list  = domains[train_idx:]
+    return train_list, valid_list, test_list
+
+
+def plot_losses(title, filename, train_loss, valid_loss):
+    train_avg, train_std = zip(*train_loss)
+    valid_avg, valid_std = zip(*valid_loss)
+    
+    train_avg, train_std = map(np.array, (train_avg, train_std))
+    valid_avg, valid_std = map(np.array, (valid_avg, valid_std))
+    
+    plt.figure()
+    plt.fill_between(train_avg, train_avg - train_std, train_avg + train_std, alpha=0.25, color='C0')
+    plt.plot(train_avg, '-', color='C0', label='Validation')
+
+    plt.fill_between(valid_avg, valid_avg - valid_std, valid_avg + valid_std, alpha=0.25, color='C1')
+    plt.plot(train_avg, '-', color='C1', label='Train')
+
+    plt.title(title)
+    plt.ylabel('(average) loss')
+    plt.xlabel('epoch')
+    plt.legend(loc='upper left')
+    plt.savefig(filename, bbox_inches='tight')
 
 if __name__ == "__main__":
     path = '/mnt/ceph/users/dberenberg/Data/cath/'
@@ -279,6 +307,9 @@ if __name__ == "__main__":
 
     args = arguments()
     args.results_dir.mkdir(exist_ok=True, parents=True)
+    args.models_dir = args.results_dir / 'models'
+    args.models_dir.mkdir(exist_ok=True, parents=True)
+
     
     # CUDA for PyTorch
     args.cuda = args.cuda and torch.cuda.is_available()
@@ -286,49 +317,28 @@ if __name__ == "__main__":
     
     # making/recording train/validation/test tests
     if not args.lists:
-        np.random.seed(104)
-        np.random.shuffle(domains)
-
-        p_tr, p_va = 0.75,  0.15
-        train_idx = int(p_tr*len(domains))
-        val_idx   = int(p_va*train_idx)
-
-        print(train_idx - val_idx, train_idx, len(domains), flush=True) 
-
-        args.train_list = domains[:train_idx - val_idx]
-        args.valid_list = domains[train_idx - val_idx:train_idx]
-        args.test_list  = domains[train_idx:]
+        args.train_list, args.valid_list, args.test_list = generate_lists(domains)
     else:
-        trn, val, tes = map(load_set, args.lists)
-        args.train_list = trn
-        args.valid_list = val
-        args.test_list  = tes
+        args.train_list, args.valid_list, args.test_list = map(load_set, args.lists)
 
     for s in ['train', 'valid', 'test']:
         save_set(args.results_dir / f"{s}.list", getattr(args, f"{s}_list"))
 
+    # build model
     gae = MultitaskGAE(in_features=22,
                        out_features=args.filter_dims[-1],
                        n_classes=len(cath_class_map),
                        filters=args.filter_dims, device=device)
     gae.to(device)
-    model_name = "{model_type}__{filter_dims}"
-
-    args.model_name = model_name.format(model_type=gae.__class__.__name__,
-                                        filter_dims="-".join(map(str, args.filter_dims)))
-
-    args.results_dir = str(args.results_dir) + "/"
-
-    print(args.model_name, flush=True)
 
     # optimizer
     optimizer = optim.Adam(gae.parameters(), lr=args.lr, weight_decay=args.l2_reg)
 
     # loss functions
     loss_bc  = nn.BCELoss() # classify contact
-    loss_ce = nn.CrossEntropyLoss() # classify cath class
+    loss_nll = nn.CrossEntropyLoss() # classify cath class
     loss_bc.cuda()
-    loss_ce.cuda()
+    loss_nll.cuda()
 
     # parameters
     params = {'batch_size': args.batch_size,
@@ -344,50 +354,78 @@ if __name__ == "__main__":
     validation_generator = data.DataLoader(validation_dataset, **params)
 
     # Creates the train_step function
-    train_step = make_train_step(gae, loss_bc, loss_ce, optimizer)
+    train_step = make_train_step(gae, loss_bc, loss_nll, optimizer)
 
     # Creates the valid_step function
-    valid_step = make_valid_step(gae, loss_bc, loss_ce)
+    valid_step = make_valid_step(gae, loss_bc, loss_nll)
 
     # mini-batch update
     train_loss_list = []
     valid_loss_list = []
+    
+    # save current best models.
+    best_valid_loss = np.inf
+    best_model_name = None
+    filter_string = "-".join(map(str, args.filter_dims))
+    model_name_fmt  = f"{gae.__class__.__name__}__f{filter_string}""__vloss{valid_loss:0.4f}.pt"
+    
+
+    args.results_dir = str(args.results_dir) + "/"
+    args.models_dir  = str(args.models_dir) + "/"
+
+    T, V = map(len, (training_generator, validation_generator)) 
+    N = len(training_generator.dataset)
     for epoch in range(1, args.epochs + 1):
-        train_loss = 0.0
+        epoch_train_loss = []
         for batch_idx, (A_batch, S_batch, C_batch) in enumerate(training_generator):
             A_batch = A_batch.to(device)
             S_batch = S_batch.to(device)
             C_batch = C_batch.to(device)
 
             loss = train_step((A_batch, S_batch), (A_batch, C_batch))
-            train_loss += loss
+            epoch_train_loss.append(loss)
 
             # print statistics
             if not (batch_idx % args.log_interval):
-                print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(epoch,
-                                                                               batch_idx * args.batch_size, 
-                                                                               len(training_generator.dataset),
-                                                                               100. * batch_idx / len(training_generator),
-                                                                               loss), flush=True)
-        print('====> Epoch: {} Average train_loss: {:.4f}'.format(epoch, train_loss / len(training_generator)), flush=True)
+                progress = batch_idx * args.batch_size
+                pct = 100. * batch_idx / T
+                print(f"[*] (train) epoch {epoch} [{progress:5d}/{N:5d} ({pct:5.2f}%)]\tloss: {loss:0.6f}", flush=True)
+
+        avg_train_loss = np.mean(epoch_train_loss)
+        std_train_loss = np.std(epoch_train_loss)
+        print(f"[!] E{epoch:3d}) average training loss: {avg_train_loss:0.4f}, std training loss: {std_train_loss:0.4f}", flush=True)
         sys.stdout.flush()
-        train_loss_list.append(train_loss/len(training_generator))
+        train_loss_list.append((avg_train_loss, std_train_loss))
         with torch.no_grad():
-            valid_loss = 0.0
+            epoch_valid_loss = []
             for batch_idx, (A_batch, S_batch, C_batch) in enumerate(validation_generator):
                 A_batch = A_batch.to(device)
                 S_batch = S_batch.to(device)
                 C_batch = C_batch.to(device)
 
                 loss = valid_step((A_batch, S_batch), (A_batch, C_batch))
-                valid_loss += loss
-        print('====> Epoch: {} Average valid_loss: {:.4f}'.format(epoch, valid_loss / len(validation_generator)), flush=True)
+                epoch_valid_loss.append(loss)
+
+        avg_valid_loss = np.mean(epoch_valid_loss)
+        std_valid_loss = np.std(epoch_valid_loss)
+        if avg_valid_loss < best_valid_loss:
+            # save the model
+            best_model_name = model_name_fmt.format(valid_loss=avg_valid_loss)
+            torch.save(gae.state_dict(), args.models_dir + best_model_name + '_model.pt')
+
+        print(f"[!] E{epoch:3d}) average validation loss: {avg_valid_loss:0.4f}, std validation loss: {std_valid_loss:0.4f}", flush=True)
         sys.stdout.flush()
-        valid_loss_list.append(valid_loss/len(validation_generator))
+        valid_loss_list.append((avg_valid_loss, std_valid_loss))
 
     # plot lossess
-    plot_losses(train_loss_list, valid_loss_list)
+    title = f"Model loss: {filter_string}"
+    plot_losses(title, args.results_dir + 'model_loss.png', train_loss_list, valid_loss_list)
 
     # save model
-    torch.save(gae.state_dict(), args.results_dir + args.model_name + '_model.pt')
-    torch.save(gae.state_dict(), args.results_dir + 'final.pt')
+    shutil.copyfile(args.models_dir + best_model_name + '_model.pt', args.results_dir + 'final.pt')
+    # record the losses
+    with open(args.results_dir + 'loss.tsv', 'w') as lossfile:
+        print("epoch", "train","train_std", "val", "val_std", sep='\t', file=lossfile)
+        for epoch, ((tavg, tstd), (vavg, vstd)) in enumerate(zip(train_loss_list, valid_loss_list)):
+            print(epoch, tavg, tstd, vavg, vstd, sep='\t', file=lossfile)
+
