@@ -5,6 +5,7 @@
 *.dat
 *.list
 *.kmean # kmeans files
+kmean_files/
 .ropeproject
 
 *.py[cxo]
