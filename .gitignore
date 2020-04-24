@@ -4,6 +4,7 @@
 *.log
 *.dat
 *.list
+*.kmean # kmeans files
 .ropeproject
 
 *.py[cxo]
