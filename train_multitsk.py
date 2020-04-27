@@ -338,7 +338,6 @@ if __name__ == "__main__":
     # CUDA for PyTorch
     args.cuda = args.cuda and torch.cuda.is_available()
     device = torch.device("cuda:0" if args.cuda else "cpu")
-    weights = compute_class_weights(cath_annotation_frame['class'].values)
     
     # making/recording train/validation/test tests
     if not args.lists:
@@ -359,7 +358,12 @@ if __name__ == "__main__":
     # optimizer
     optimizer = optim.Adam(gae.parameters(), lr=args.lr, weight_decay=args.l2_reg)
 
+    # adjust classes
+    vc = cath_annotation_frame['class'].value_counts()
+
     # loss functions
+    weights = compute_class_weights(cath_annotation_frame['class'].values)
+
     loss_bc  = nn.BCELoss() # classify contact
     loss_nll = nn.NLLLoss(weight=weights) # classify cath class
     loss_bc.cuda()

@@ -4,6 +4,7 @@
 *.log
 *.dat
 *.list
+*.tsk
 
 .ropeproject
 
