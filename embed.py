@@ -62,7 +62,7 @@ def load_model(model_file,
                filters=[64, 64, 64, 64, 64]):
     """Load pretrained GAE model"""
     #gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
-    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=1377, device=device)
+    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=206, device=device)
     gae.load_state_dict(torch.load(model_file), strict=False)
     gae.to(device)
     gae.eval()

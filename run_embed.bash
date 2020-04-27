@@ -11,8 +11,8 @@ source ${HOME}/.node_allocation/load_gpu_modules
 conda activate protuniv
 
 set -x
-MODEL=results/test/final.pt
-FILTERS="64 64 64"
+MODEL=results/multitask/gae_64x5/final.pt
+FILTERS="64 64 64 64 64"
 # =====================================
 #MODEL=results/gae_64x7/final.pt
 #FILTERS="64 64 64 64 64 64 64"

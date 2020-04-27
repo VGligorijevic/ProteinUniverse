@@ -8,7 +8,8 @@ import torch
 import pandas as pd
 
 from gae.loader import load_domain_list
-from gae.loader import load_fasta, seq2onehot
+from gae.loader import (load_domain_list, load_fasta,
+                        seq2onehot, onehot2seq)
 
 from train_multitsk import MultitaskGAE, Embedding
 from embed import load_contact_map, preprocess_sequence, Exists, Nat 
@@ -37,7 +38,7 @@ def load_model(model_file,
                filters=[64, 64, 64, 64, 64]):
     """Load pretrained GAE model"""
     #gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
-    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=1377, device=device)
+    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=206, device=device)
     gae.load_state_dict(torch.load(model_file), strict=False)
     gae.to(device)
     gae.eval()
@@ -45,16 +46,35 @@ def load_model(model_file,
 
 if __name__ == '__main__':
     path = '/mnt/ceph/users/dberenberg/Data/cath/'
+    domains = load_domain_list(Path(path) / 'materials' / 'annotated-cath-S40-domains.list')
 
     args = arguments()
 
+    ## CATH classification processing #######################
     # make cath annotation map 
     cath_annotation_frame = pd.read_table(Path(path) / 'materials' / 'metadata' / 'domain-classifications.tsv')
-    cath_topologies = sorted(cath_annotation_frame.TOPOL.unique())
+    cath_annotation_frame = cath_annotation_frame[cath_annotation_frame.DOMAIN.isin(domains)].copy()
+
+    # 25% of topologies annotate 90% of proteins (and have more than 9 samples) 
+    vc = cath_annotation_frame.TOPOL.value_counts()
+    cutoff = 19
+    large = vc[vc >  cutoff].index
+    
+    is_large = cath_annotation_frame['TOPOL'].isin(large)
+    is_small = ~is_large
+
+    # adjust classes
+    col = 'adjusted_topol'
+    cath_annotation_frame.loc[is_small, col] = 'zzzzzz-unknown'
+    cath_annotation_frame.loc[is_large, col] = cath_annotation_frame.loc[is_large, 'TOPOL']
+
+    cath_topologies = sorted(cath_annotation_frame[col].unique())
+    print(f"# classes = {len(cath_topologies)}")
     cath_class_map  = dict(zip(cath_topologies, range(cath_topologies.__len__())))
 
-    cath_annotation_frame['class'] = cath_annotation_frame.TOPOL.apply(cath_class_map.get)
+    cath_annotation_frame['class'] = cath_annotation_frame[col].apply(cath_class_map.get)
     cath_classifications = dict(cath_annotation_frame[['DOMAIN', 'class']].values)
+    ######### end CATH classification processing ############
     
     # load up model
     F    = load_model(args.model_name, filters=args.filters)

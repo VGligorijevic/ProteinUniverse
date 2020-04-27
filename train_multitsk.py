@@ -13,6 +13,8 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -121,9 +123,17 @@ class MultitaskGAE(nn.Module):
 
         # Decoder
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
-        self.classifier   = nn.Linear(sum(self.filters), out_features=self.n_classes)
-        self.log_softmax  = nn.LogSoftmax(dim=-1)
-        self.drop = nn.Dropout(p=drop_prob)
+        
+        fc_dim = sum(self.filters) // 2
+        self.classification_branch = nn.Sequential(
+                    nn.Linear(sum(self.filters), out_features=self.n_classes),
+                    #nn.ReLU(),
+                    #nn.Dropout(p=drop_prob),
+                    #nn.Linear(fc_dim, out_features=self.n_classes),
+                    #nn.ReLU(),
+                    #nn.Dropout(p=drop_prob),
+                    nn.LogSoftmax(dim=-1)
+                )
         
         #self.seq_decoder = nn.Sequential(nn.Linear(sum(self.filters), out_features=in_features), nn.LogSoftmax(dim=-1))
 
@@ -131,11 +141,9 @@ class MultitaskGAE(nn.Module):
         A, S = data
         gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(0, len(self.filters))]
         x = torch.cat(gcn_embedd, -1)
+
         cmap_out  = self.cmap_decoder(x)
-        x_sum = x.sum(axis=1)
-        class_input = self.drop(x_sum)
-        class_oh  = self.classifier(class_input)
-        class_out = self.log_softmax(class_oh) 
+        class_out = self.classification_branch(x.sum(axis=1))
         return cmap_out, class_out
 
 class Embedding(nn.Module):
@@ -275,26 +283,38 @@ def arguments():
 
     parser.set_defaults(cuda=True)
     return parser.parse_args()
+#
+#def generate_lists(domains):
+#    np.random.seed(104)
+#    np.random.shuffle(domains)
+#
+#    p_tr, p_va = 0.75,  0.15
+#    train_idx = int(p_tr*len(domains))
+#    val_idx   = int(p_va*train_idx)
+#
+#    print(train_idx - val_idx, train_idx, len(domains), flush=True) 
+#
+#    train_list = domains[:train_idx - val_idx]
+#    valid_list = domains[train_idx - val_idx:train_idx]
+#    test_list  = domains[train_idx:]
+#    return train_list, valid_list, test_list
 
-def generate_lists(domains):
-    np.random.seed(104)
-    np.random.shuffle(domains)
+def generate_sets(annotations, stratifier=None, test_size=0.25, val_size=0.15, random_state=104):
+    fst_stratifier = annotations[stratifier] if stratifier is not None else None
+    trainval, test = train_test_split(annotations,
+                                      test_size=test_size,
+                                      stratify=fst_stratifier,
+                                      random_state=random_state)
 
-    p_tr, p_va = 0.75,  0.15
-    train_idx = int(p_tr*len(domains))
-    val_idx   = int(p_va*train_idx)
+    snd_stratifier = trainval[stratifier] if stratifier is not None else None
+    train, val     = train_test_split(trainval,
+                                      test_size=val_size,
+                                      stratify=snd_stratifier,
+                                      random_state=random_state)
 
-    print(train_idx - val_idx, train_idx, len(domains), flush=True) 
-
-    train_list = domains[:train_idx - val_idx]
-    valid_list = domains[train_idx - val_idx:train_idx]
-    test_list  = domains[train_idx:]
-    return train_list, valid_list, test_list
-
+    return train.DOMAIN.values, val.DOMAIN.values, test.DOMAIN.values
 
 def plot_losses(title, filename, train_loss, valid_loss):
-    
-    
     plt.figure()
     plt.plot(train_loss, '-', color='C0', label='Train')
     plt.plot(valid_loss, '-', color='C1', label='Validation')
@@ -309,9 +329,14 @@ def compute_class_weights(labels):
     counts = Counter(labels)
     mx = max(counts.values())
     weights = torch.zeros(len(counts)) 
+    tot = sum(counts.values())
     for cls, ct in counts.items():
+        #weights[cls] = 1/(ct / tot)
         weights[cls] = float(mx/ct)
+    # weights = weights / max(weights)
+    print(weights)
     weights.to(device)
+
     return weights
 
 if __name__ == "__main__":
@@ -320,28 +345,46 @@ if __name__ == "__main__":
     # load entire list
     domain2seqres = load_fasta(Path(path) / 'materials' / 'cath-dataset-nonredundant-S40.fa')
     domains = load_domain_list(Path(path) / 'materials' / 'annotated-cath-S40-domains.list')
-
+    
+    ## CATH classification processing #######################
     # make cath annotation map 
     cath_annotation_frame = pd.read_table(Path(path) / 'materials' / 'metadata' / 'domain-classifications.tsv')
-    cath_topologies = sorted(cath_annotation_frame.TOPOL.unique())
+    cath_annotation_frame = cath_annotation_frame[cath_annotation_frame.DOMAIN.isin(domains)].copy()
+
+    # 25% of topologies annotate 90% of proteins (and have more than 9 samples) 
+    vc = cath_annotation_frame.TOPOL.value_counts()
+    cutoff = 19
+    large = vc[vc >  cutoff].index
+    
+    is_large = cath_annotation_frame['TOPOL'].isin(large)
+    is_small = ~is_large
+
+    # adjust classes
+    col = 'adjusted_topol'
+    cath_annotation_frame.loc[is_small, col] = 'zzzzzz-unknown'
+    cath_annotation_frame.loc[is_large, col] = cath_annotation_frame.loc[is_large, 'TOPOL']
+
+    cath_topologies = sorted(cath_annotation_frame[col].unique())
+    print(f"# classes = {len(cath_topologies)}")
     cath_class_map  = dict(zip(cath_topologies, range(cath_topologies.__len__())))
 
-    cath_annotation_frame['class'] = cath_annotation_frame.TOPOL.apply(cath_class_map.get)
+    cath_annotation_frame['class'] = cath_annotation_frame[col].apply(cath_class_map.get)
     cath_classifications = dict(cath_annotation_frame[['DOMAIN', 'class']].values)
+    ######### end CATH classification processing ############
 
     args = arguments()
     args.results_dir.mkdir(exist_ok=True, parents=True)
     args.models_dir = args.results_dir / 'models'
     args.models_dir.mkdir(exist_ok=True, parents=True)
 
-    
     # CUDA for PyTorch
     args.cuda = args.cuda and torch.cuda.is_available()
     device = torch.device("cuda:0" if args.cuda else "cpu")
     
     # making/recording train/validation/test tests
     if not args.lists:
-        args.train_list, args.valid_list, args.test_list = generate_lists(domains)
+        args.train_list, args.valid_list, args.test_list = generate_sets(cath_annotation_frame,
+                                                                         stratifier='class')
     else:
         args.train_list, args.valid_list, args.test_list = map(load_set, args.lists)
 
@@ -358,11 +401,10 @@ if __name__ == "__main__":
     # optimizer
     optimizer = optim.Adam(gae.parameters(), lr=args.lr, weight_decay=args.l2_reg)
 
-    # adjust classes
-    vc = cath_annotation_frame['class'].value_counts()
 
     # loss functions
     weights = compute_class_weights(cath_annotation_frame['class'].values)
+    weights[-1] = 1. # make unknown have a unit weight ..?
 
     loss_bc  = nn.BCELoss() # classify contact
     loss_nll = nn.NLLLoss(weight=weights) # classify cath class
