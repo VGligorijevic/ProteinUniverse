@@ -31,10 +31,11 @@ plt.switch_backend('agg')
     
 class Dataset(data.Dataset):
     """ Characterizes a dataset for PyTorch """
-    def __init__(self, domain_IDs, domain_class_map):
+    def __init__(self, domain_IDs, domain_class_map, threshold=10.):
         'Initialization'
         self.domain_IDs = domain_IDs
         self.class_map  = domain_class_map
+        self.threshold  = threshold
 
     def __len__(self):
         'Denotes the total number of samples'
@@ -52,8 +53,8 @@ class Dataset(data.Dataset):
         cls_idx = self.class_map[ID]
 
         # Create contact maps (10A cutoff)
-        A[A <= 10.0] = 1.0
-        A[A > 10.0] = 0.0
+        A[A <= self.threshold] = 1.0
+        A[A >  self.threshold] = 0.0
         A = A - torch.diag(torch.diagonal(A))
         A = A + torch.eye(A.shape[1])
 
@@ -143,7 +144,12 @@ class MultitaskGAE(nn.Module):
         x = torch.cat(gcn_embedd, -1)
 
         cmap_out  = self.cmap_decoder(x)
-        class_out = self.classification_branch(x.sum(axis=1))
+
+        #reduc = x.sum(axis=1)
+        comb, inds = torch.max(x ,1)
+
+        #print(comb.shape)
+        class_out = self.classification_branch(comb)
         return cmap_out, class_out
 
 class Embedding(nn.Module):
@@ -278,26 +284,17 @@ def arguments():
                         default=64,
                         help="Batch size.")
 
+    parser.add_argument("-l", "--level",
+                        choices=list("CATH"), default="C", help="CATH annotation level")
+
+    parser.add_argument("-t", "--threshold",
+                        dest='threshold', type=NaturalFloat, help="Aangstrom threshold", default=10.)
+
     parser.add_argument('--results_dir', type=Path, default='./results/', help="Directory to dump results and models.")
     parser.add_argument("--lists", type=Path, default=None, nargs=3, help="train, validation, and test paths in that order")
 
     parser.set_defaults(cuda=True)
     return parser.parse_args()
-#
-#def generate_lists(domains):
-#    np.random.seed(104)
-#    np.random.shuffle(domains)
-#
-#    p_tr, p_va = 0.75,  0.15
-#    train_idx = int(p_tr*len(domains))
-#    val_idx   = int(p_va*train_idx)
-#
-#    print(train_idx - val_idx, train_idx, len(domains), flush=True) 
-#
-#    train_list = domains[:train_idx - val_idx]
-#    valid_list = domains[train_idx - val_idx:train_idx]
-#    test_list  = domains[train_idx:]
-#    return train_list, valid_list, test_list
 
 def generate_sets(annotations, stratifier=None, test_size=0.25, val_size=0.15, random_state=104):
     fst_stratifier = annotations[stratifier] if stratifier is not None else None
@@ -325,57 +322,85 @@ def plot_losses(title, filename, train_loss, valid_loss):
     plt.legend(loc='upper left')
     plt.savefig(filename, bbox_inches='tight')
 
-def compute_class_weights(labels):
-    counts = Counter(labels)
-    mx = max(counts.values())
-    weights = torch.zeros(len(counts)) 
-    tot = sum(counts.values())
-    for cls, ct in counts.items():
-        #weights[cls] = 1/(ct / tot)
-        weights[cls] = float(mx/ct)
-    # weights = weights / max(weights)
-    print(weights)
-    weights.to(device)
 
-    return weights
+def build_annotations(path, domains, level, cutoff=None, verbose=True):
+    """
+    Builds the annotations for a set of domains.
+    args:
+        :path (Path or str) - location of annotation file
+        :domains (list)     - list of valid domains
+        :level (str)        - column to use as label set
+        :cutoff (int)       - minimum size of class
+    returns:
+        :(pd.DataFrame) - annotations
+        :(dict)         - class map
+    """
+    cath_annotation_frame = pd.read_table(path)
+    cath_annotation_frame = cath_annotation_frame[cath_annotation_frame.DOMAIN.isin(domains)].copy()
+
+    vc = cath_annotation_frame[level].value_counts()
+    if cutoff is None: cutoff = 0
+    large = vc[vc >  cutoff].index
+
+    is_large = cath_annotation_frame[level].isin(large)
+    is_small = ~is_large
+
+    # adjust classes
+    col = f'adjusted_{level}'
+    UNK = "ZZZZZ_UNKNOWN"
+    cath_annotation_frame.loc[is_small, col] = UNK
+    cath_annotation_frame.loc[is_large, col] = cath_annotation_frame.loc[is_large, level]
+
+    # sort classes alphabetically
+    cath_classes   = sorted(cath_annotation_frame[col].unique())
+    cath_class_map = {c:i for i, c in enumerate(cath_classes)}
+
+    cath_annotation_frame['class'] = cath_annotation_frame[col].apply(cath_class_map.get)
+    cath_classifications = dict(cath_annotation_frame[['DOMAIN', 'class']].values)
+    
+    # build class weighting
+    class_counts = Counter(cath_annotation_frame[col].values)
+    weights = torch.zeros(len(class_counts))
+    mx = max(class_counts.values())
+    for cls in cath_classes:
+        idx = cath_class_map[cls]
+        ct  = class_counts[cls]
+        weights[idx] = float(mx / ct)
+
+    weights[-1] = 1.  # give less of a shit about unknowns 
+
+    if verbose:
+        print(f"# {level} classes = {len(cath_classes)}")
+        print(dict(zip(cath_classes, weights)))
+
+    return cath_annotation_frame, cath_classifications, weights 
+
 
 if __name__ == "__main__":
     path = '/mnt/ceph/users/dberenberg/Data/cath/'
+
+    args = arguments()
+    args.results_dir.mkdir(exist_ok=True, parents=True)
+    args.models_dir = args.results_dir / 'models'
+    args.models_dir.mkdir(exist_ok=True, parents=True)
+
 
     # load entire list
     domain2seqres = load_fasta(Path(path) / 'materials' / 'cath-dataset-nonredundant-S40.fa')
     domains = load_domain_list(Path(path) / 'materials' / 'annotated-cath-S40-domains.list')
     
     ## CATH classification processing #######################
-    # make cath annotation map 
-    cath_annotation_frame = pd.read_table(Path(path) / 'materials' / 'metadata' / 'domain-classifications.tsv')
-    cath_annotation_frame = cath_annotation_frame[cath_annotation_frame.DOMAIN.isin(domains)].copy()
+    table_loc = Path(path) / 'materials/metadata/domain-classifications.tsv'
 
-    # 25% of topologies annotate 90% of proteins (and have more than 9 samples) 
-    vc = cath_annotation_frame.TOPOL.value_counts()
-    cutoff = 19
-    large = vc[vc >  cutoff].index
-    
-    is_large = cath_annotation_frame['TOPOL'].isin(large)
-    is_small = ~is_large
-
-    # adjust classes
-    col = 'adjusted_topol'
-    cath_annotation_frame.loc[is_small, col] = 'zzzzzz-unknown'
-    cath_annotation_frame.loc[is_large, col] = cath_annotation_frame.loc[is_large, 'TOPOL']
-
-    cath_topologies = sorted(cath_annotation_frame[col].unique())
-    print(f"# classes = {len(cath_topologies)}")
-    cath_class_map  = dict(zip(cath_topologies, range(cath_topologies.__len__())))
-
-    cath_annotation_frame['class'] = cath_annotation_frame[col].apply(cath_class_map.get)
-    cath_classifications = dict(cath_annotation_frame[['DOMAIN', 'class']].values)
-    ######### end CATH classification processing ############
-
-    args = arguments()
-    args.results_dir.mkdir(exist_ok=True, parents=True)
-    args.models_dir = args.results_dir / 'models'
-    args.models_dir.mkdir(exist_ok=True, parents=True)
+    level = {"C":"CLASS", "A":"ARCH", "T":"TOPOL", "H":"HOMOL"}[args.level]
+    cath_annotation_frame, cath_classifications, weights = build_annotations(table_loc, domains, level, cutoff=100)
+    with open(args.results_dir / 'params.txt', 'w') as par:
+        astring = " ".join(map(str, args.filter_dims))
+        print(f"{level}", f"{args.threshold}", f"{astring}", f"{len(weights)}", file=par, sep='\n')
+        print(f"annotation_level={level}",
+                f"contact_thresh={args.threshold}",
+                f"architecture={astring}",
+                f"n_classes={len(weights)}", sep='\n')
 
     # CUDA for PyTorch
     args.cuda = args.cuda and torch.cuda.is_available()
@@ -394,7 +419,7 @@ if __name__ == "__main__":
     # build model
     gae = MultitaskGAE(in_features=22,
                        out_features=args.filter_dims[-1],
-                       n_classes=len(cath_class_map),
+                       n_classes=len(weights),
                        filters=args.filter_dims, device=device)
     gae.to(device)
 
@@ -403,9 +428,6 @@ if __name__ == "__main__":
 
 
     # loss functions
-    weights = compute_class_weights(cath_annotation_frame['class'].values)
-    weights[-1] = 1. # make unknown have a unit weight ..?
-
     loss_bc  = nn.BCELoss() # classify contact
     loss_nll = nn.NLLLoss(weight=weights) # classify cath class
     loss_bc.cuda()
@@ -414,14 +436,14 @@ if __name__ == "__main__":
     # parameters
     params = {'batch_size': args.batch_size,
               'shuffle': True,
-              'collate_fn':make_collate_padd(len(cath_topologies))}
+              'collate_fn':make_collate_padd(len(weights))}
 
     # train generator
-    training_dataset = Dataset(args.train_list, cath_classifications)
+    training_dataset = Dataset(args.train_list, cath_classifications, threshold=args.threshold)
     training_generator = data.DataLoader(training_dataset, **params)
 
     # valid generator
-    validation_dataset = Dataset(args.valid_list, cath_classifications)
+    validation_dataset = Dataset(args.valid_list, cath_classifications, threshold=args.threshold)
     validation_generator = data.DataLoader(validation_dataset, **params)
 
     # Creates the train_step function
@@ -446,6 +468,7 @@ if __name__ == "__main__":
 
     T, V = map(len, (training_generator, validation_generator)) 
     N = len(training_generator.dataset)
+    print("starting")
     for epoch in range(1, args.epochs + 1):
         train_loss = 0.
         for batch_idx, (A_batch, S_batch, C_batch) in enumerate(training_generator):
