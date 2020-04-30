@@ -125,14 +125,8 @@ class MultitaskGAE(nn.Module):
         # Decoder
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
         
-        fc_dim = sum(self.filters) // 2
         self.classification_branch = nn.Sequential(
                     nn.Linear(sum(self.filters), out_features=self.n_classes),
-                    #nn.ReLU(),
-                    #nn.Dropout(p=drop_prob),
-                    #nn.Linear(fc_dim, out_features=self.n_classes),
-                    #nn.ReLU(),
-                    #nn.Dropout(p=drop_prob),
                     nn.LogSoftmax(dim=-1)
                 )
         
@@ -150,6 +144,7 @@ class MultitaskGAE(nn.Module):
 
         #print(comb.shape)
         class_out = self.classification_branch(comb)
+        #seq_out = self.seq_decoder(x)
         return cmap_out, class_out
 
 class Embedding(nn.Module):
@@ -347,7 +342,7 @@ def build_annotations(path, domains, level, cutoff=None, verbose=True):
 
     # adjust classes
     col = f'adjusted_{level}'
-    UNK = "ZZZZZ_UNKNOWN"
+    UNK = "zzzzz_UNKNOWN"
     cath_annotation_frame.loc[is_small, col] = UNK
     cath_annotation_frame.loc[is_large, col] = cath_annotation_frame.loc[is_large, level]
 
@@ -367,7 +362,7 @@ def build_annotations(path, domains, level, cutoff=None, verbose=True):
         ct  = class_counts[cls]
         weights[idx] = float(mx / ct)
 
-    weights[-1] = 1.  # give less of a shit about unknowns 
+    weights[-1] = 0.  # give no shit about unknowns 
 
     if verbose:
         print(f"# {level} classes = {len(cath_classes)}")
@@ -393,7 +388,7 @@ if __name__ == "__main__":
     table_loc = Path(path) / 'materials/metadata/domain-classifications.tsv'
 
     level = {"C":"CLASS", "A":"ARCH", "T":"TOPOL", "H":"HOMOL"}[args.level]
-    cath_annotation_frame, cath_classifications, weights = build_annotations(table_loc, domains, level, cutoff=100)
+    cath_annotation_frame, cath_classifications, weights = build_annotations(table_loc, domains, level, cutoff=19)
     with open(args.results_dir / 'params.txt', 'w') as par:
         astring = " ".join(map(str, args.filter_dims))
         print(f"{level}", f"{args.threshold}", f"{astring}", f"{len(weights)}", file=par, sep='\n')

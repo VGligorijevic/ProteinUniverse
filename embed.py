@@ -40,7 +40,12 @@ def Nat(i):
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-i", "--input-list", required=True, type=Exists,
-                        dest='inputs', help="Input file with list of absolute paths to test matrices.")
+                        dest='inputs', help="Input file with list of keys to locate inputs.")
+
+    parser.add_argument("-L", "--location", default='/mnt/ceph/users/dberenberg/Data/cath/cath-nr-S40_tensors', type=Path,
+                        dest='source_loc')
+
+
     parser.add_argument("-f", "--fasta", dest='fasta', required=True, type=Exists,
                         help="Maps ID to sequence")
     parser.add_argument('-M', '--model-session', type=Exists, help="Location of completed session", required=True,
@@ -92,9 +97,10 @@ def preprocess_sequence(seq):
 def seqdict(fastafile):
     return {k.lstrip('>'):v for k, v in fasta_reader(fastafile)}
 
+
 if __name__ == '__main__':
-    path = '/mnt/ceph/users/dberenberg/Data/cath/'
     args = arguments()
+    path = args.source_loc
     sess = args.sess
     args.model_name = sess / "final.pt"
 
@@ -112,7 +118,7 @@ if __name__ == '__main__':
         lines = f.readlines()
         N = len(lines)
 
-    paths = map(lambda stem: Path(path) / "cath-nr-S40_tensors" / f"{stem.strip()}.pt" , lines)
+    paths = map(lambda stem: Path(path) / f"{stem.strip()}.pt" , lines)
     
     M = args.output
     
@@ -144,10 +150,12 @@ if __name__ == '__main__':
             structure_id = tensor_file.stem
             structure_ids.append(structure_id)
 
-            A = load_contact_map(tensor_file, resolution=threshold)
-            S = preprocess_sequence(id2seq[structure_id])
-            # extract features
-            x = F((A, S))[0].cpu().detach().numpy()
+            with torch.no_grad():
+                # extract features
+                A = load_contact_map(tensor_file, resolution=threshold)
+                S = preprocess_sequence(id2seq[structure_id])
+
+                x = F((A, S))[0].cpu().detach().numpy()
             x = np.max(x, axis=0)
             emat[i] = x
           # if we are printing msgs   and either on printerval or finished
