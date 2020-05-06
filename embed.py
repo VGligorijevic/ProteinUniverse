@@ -24,6 +24,7 @@ from gae.loader import load_fasta, seq2onehot
 
 # CUDA for PyTorch
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(device)
 
 def Exists(p):
     p = Path(p)
@@ -60,10 +61,11 @@ def arguments():
 
 def load_model(model_file,
                n_classes=4,
+               pooling='sum', 
                filters=[64, 64, 64, 64, 64]):
     """Load pretrained GAE model"""
     #gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
-    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=n_classes, device=device)
+    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=n_classes, pooling=pooling, device=device)
     gae.load_state_dict(torch.load(model_file), strict=False)
     gae.to(device)
     gae.eval()
@@ -106,11 +108,13 @@ if __name__ == '__main__':
 
     # retrieve model info
     with open(sess / 'params.txt', 'r') as params:
-        level, threshold, arch_string, n_classes = filter(None, map(lambda line: line.strip(), params))  
-    dimensions = list(map(int, arch_string.split()))
-    threshold, n_classes = map(int, map(float, (threshold, n_classes)))
+        level, threshold, arch_string, n_classes, pooling = filter(None, map(lambda line: line.strip(), params))  
 
-    F      = load_model(args.model_name, filters=dimensions, n_classes=n_classes)
+    dimensions = list(map(int, arch_string.split()))
+    threshold = int(float(threshold))
+    n_classes = None if n_classes == 'None' else int(float(n_classes)) 
+
+    F      = load_model(args.model_name, filters=dimensions, n_classes=n_classes, pooling=pooling)
     print(args.model_name, F.__class__.__name__)
     id2seq = load_fasta(args.fasta)
 
@@ -136,12 +140,12 @@ if __name__ == '__main__':
         fst_pth = next(paths)
         structure_id = fst_pth.stem
         A, S = load_contact_map(fst_pth, resolution=threshold), preprocess_sequence(id2seq[structure_id])
-        x    = F((A,S))[0].cpu().detach().numpy() 
-        x = np.max(x, axis=0)
+
+        x = F((A,S))[0].cpu().detach().numpy() 
         d = x.shape[0] # recover the width
-        
         # create the big husker
-        emat          = np.zeros((N, d))
+        emat = np.zeros((N, d))
+
         structure_ids = []
         emat[0] = x
         structure_ids.append(structure_id)
@@ -154,21 +158,26 @@ if __name__ == '__main__':
                 # extract features
                 A = load_contact_map(tensor_file, resolution=threshold)
                 S = preprocess_sequence(id2seq[structure_id])
-
+                
                 x = F((A, S))[0].cpu().detach().numpy()
-            x = np.max(x, axis=0)
+                A = A.cpu().detach()
+                S = S.cpu().detach()
+                del A, S
+            if not i % 1000:
+                torch.cuda.empty_cache()
+        
+            shape = x.shape
             emat[i] = x
-          # if we are printing msgs   and either on printerval or finished
-            if all((args.verbose, i)) and any((not i % skip, not i % N)):
-                print(f"{clear}[*] {i}/{N} ({datetime.now() - start} elapsed)", end='', flush=True)
+            print(f"[*] {i}/{N} {shape} ({datetime.now() - start} elapsed)", flush=True)
 
-        print(f"{clear}[!] Finished embedding.")
-        print("[!] Running TSNE")
+        print(f"[!] Finished embedding.", flush=True)
+        print("[!] Running TSNE",flush=True)
         R = TSNE(n_components=2).fit_transform(emat)
+
         np.savez_compressed(M, E=emat, id=np.array(structure_ids), R=R)
 
     except KeyboardInterrupt:
-        print(f"{clear}Exiting due to user input")
+        print(f"{clear}Exiting due to user input", flush=True)
     finally:
         elapsed = datetime.now() - start
-        print(f"{clear}Done! ({args.output}) [{N}, {d}] ({elapsed} elapsed)")
+        print(f"{clear}Done! ({args.output}) [{N}, {d}] ({elapsed} elapsed)", flush=True)

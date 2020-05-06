@@ -3,9 +3,11 @@
 
 # builtin
 import sys
+import csv
 import pickle
 import shutil
 import argparse
+import itertools
 from pathlib import Path
 from collections import Counter
 
@@ -89,7 +91,9 @@ class MultitaskGAE(nn.Module):
     def __init__(self,
                  in_features,
                  out_features,
-                 n_classes,
+                 n_classes=None,
+                 decode_seq=True,
+                 pooling='sum',
                  filters=[64, 64, 64],
                  bias=False,
                  adj_sq=False,
@@ -99,7 +103,9 @@ class MultitaskGAE(nn.Module):
         super(MultitaskGAE, self).__init__()
         
         self.n_classes = n_classes
+        self.decode_seq = decode_seq
         self.filters   = filters
+        self.pooling = pooling
 
         # Sequence embedding
         self.seq_embedd = nn.Sequential(nn.Linear(in_features, self.filters[0]), nn.ReLU(inplace=True))
@@ -125,27 +131,40 @@ class MultitaskGAE(nn.Module):
         # Decoder
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
         
-        self.classification_branch = nn.Sequential(
-                    nn.Linear(sum(self.filters), out_features=self.n_classes),
-                    nn.LogSoftmax(dim=-1)
-                )
-        
-        #self.seq_decoder = nn.Sequential(nn.Linear(sum(self.filters), out_features=in_features), nn.LogSoftmax(dim=-1))
+        if self.n_classes is not None:
+            self.classification_branch = nn.Sequential(
+                        nn.Linear(sum(self.filters), out_features=self.n_classes),
+                        nn.LogSoftmax(dim=-1)
+                    )
+        if self.decode_seq:
+            self.seq_decoder = nn.Sequential(nn.Linear(sum(self.filters), out_features=in_features), nn.LogSoftmax(dim=-1))
 
     def forward(self, data):
         A, S = data
         gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(0, len(self.filters))]
+
+        # residue-wise embeddings
         x = torch.cat(gcn_embedd, -1)
 
         cmap_out  = self.cmap_decoder(x)
 
         #reduc = x.sum(axis=1)
-        comb, inds = torch.max(x ,1)
+        if self.pooling == 'sum':
+            comb = x.sum(dim=1)
+        elif self.pooling == 'max':
+            comb, inds = torch.max(x, 1) 
 
         #print(comb.shape)
-        class_out = self.classification_branch(comb)
-        #seq_out = self.seq_decoder(x)
-        return cmap_out, class_out
+        if self.n_classes is not None:
+            class_out = self.classification_branch(comb)
+        else:
+            class_out = None
+        if self.decode_seq:
+            seq_out   = self.seq_decoder(x)
+        else:
+            seq_out = None
+
+        return cmap_out, seq_out, class_out
 
 class Embedding(nn.Module):
     """
@@ -153,6 +172,7 @@ class Embedding(nn.Module):
     """
     def __init__(self, original_model):
         super(Embedding, self).__init__()
+        self.pooling = original_model.pooling
         self.cmap_encoder = original_model.cmap_encoder
         self.num = len(list(self.cmap_encoder))
         self.gcn_layers = [self.cmap_encoder[:i] for i in range(1, self.num + 1)]
@@ -161,11 +181,15 @@ class Embedding(nn.Module):
         A, S = x
         gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(self.num)]
         x = torch.cat(gcn_embedd, -1)
-        return x
+        if self.pooling == 'sum':
+            comb = x.sum(axis=1)
+        elif self.pooling == 'max':
+            comb, inds = torch.max(x, 1)
+        return comb 
 
 
 
-def make_train_step(model, loss_bc, loss_nll, optimizer):
+def make_train_step(model, loss_bc, loss_nll_seq, loss_nll_cath, optimizer):
     """
     Builds function that performs a step in the train loop
     args:
@@ -176,23 +200,33 @@ def make_train_step(model, loss_bc, loss_nll, optimizer):
     returns:
         :(callable) - train step function
     """
+    lossnames = ['contact', 'seq', 'cath']
+    losses = {'contact': loss_bc, 'seq':loss_nll_seq, 'cath':loss_nll_cath}
+
     def train_step(x, y):
         model.train()
+        loss_step = dict()
         optimizer.zero_grad()
-        cmap_hat, class_hat = model(x)
-        loss = loss_bc(cmap_hat, y[0]) + loss_nll(class_hat, y[1])
-        #loss = loss_bc(cmap_hat, y[0]) + loss_nll(seq_hat.view(-1, 22), torch.argmax(y[1], dim=2).view(-1))
+        yhat = model(x)
+        
+        returns = dict(zip(lossnames, (None, None, None)))
+        
+        for hat, actual, lname in zip(yhat, y, lossnames):
+            if losses[lname] is not None:
+                if lname == 'seq':
+                    hat    = hat.view(-1, 22)
+                    actual = torch.argmax(actual, dim=2).view(-1)
+                returns[lname] = losses[lname](hat, actual) 
+        loss = sum(returns[l] for l in returns if returns[l] is not None)
+
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
         optimizer.step()
 
-        return loss.item()
-
-    # Returns the function that will be called inside the train loop
+        return {l:(returns[l].item() if returns[l] is not None else 0.) for l in returns} 
     return train_step
 
-
-def make_valid_step(model, loss_bc, loss_nll):
+def make_valid_step(model, loss_bc, loss_nll_seq, loss_nll_cath):
     """
     Builds function that performs a step in the valid loop
     args:
@@ -204,13 +238,23 @@ def make_valid_step(model, loss_bc, loss_nll):
 
 
     """
+    lossnames = ['contact', 'seq', 'cath']
+    losses = {'contact': loss_bc, 'seq':loss_nll_seq, 'cath':loss_nll_cath}
+
     def valid_step(x, y):
         model.eval()
-        cmap_hat, class_hat = model(x)
-        loss = loss_bc(cmap_hat, y[0]) + loss_nll(class_hat, y[1])
-        #loss = loss_bc(cmap_hat, y[0]) + loss_nll(seq_hat.view(-1, 22), torch.argmax(y[1], dim=2).view(-1))
+        yhat = model(x)
 
-        return loss.item()
+        returns = dict(zip(lossnames, (None, None, None)))
+
+        for hat, actual, lname in zip(yhat, y, lossnames):
+            if losses[lname] is not None:
+                if lname == 'seq':
+                    hat    = hat.view(-1, 22)
+                    actual = torch.argmax(actual, dim=2).view(-1)
+                returns[lname] = losses[lname](hat, actual) 
+        loss = sum(returns[l] for l in returns if returns[l] is not None)
+        return {l:(returns[l].item() if returns[l] is not None else 0.) for l in returns} 
 
     # Returns the function that will be called inside the valid loop
     return valid_step
@@ -280,10 +324,13 @@ def arguments():
                         help="Batch size.")
 
     parser.add_argument("-l", "--level",
-                        choices=list("CATH"), default="C", help="CATH annotation level")
+                        choices=list("CATH0"), default="C", help="CATH annotation level")
 
     parser.add_argument("-t", "--threshold",
                         dest='threshold', type=NaturalFloat, help="Aangstrom threshold", default=10.)
+
+    parser.add_argument("-p", "--pooling",
+                        dest="pool", type=str, choices=['max', 'sum'], default='sum')
 
     parser.add_argument('--results_dir', type=Path, default='./results/', help="Directory to dump results and models.")
     parser.add_argument("--lists", type=Path, default=None, nargs=3, help="train, validation, and test paths in that order")
@@ -307,6 +354,9 @@ def generate_sets(annotations, stratifier=None, test_size=0.25, val_size=0.15, r
     return train.DOMAIN.values, val.DOMAIN.values, test.DOMAIN.values
 
 def plot_losses(title, filename, train_loss, valid_loss):
+    train_loss = [t['total'] for t in train_loss]
+    valid_loss = [v['total'] for v in valid_loss]
+
     plt.figure()
     plt.plot(train_loss, '-', color='C0', label='Train')
     plt.plot(valid_loss, '-', color='C1', label='Validation')
@@ -361,8 +411,9 @@ def build_annotations(path, domains, level, cutoff=None, verbose=True):
         idx = cath_class_map[cls]
         ct  = class_counts[cls]
         weights[idx] = float(mx / ct)
-
-    weights[-1] = 0.  # give no shit about unknowns 
+    
+    if UNK in cath_annotation_frame[col].unique():
+        weights[-1] = 0.  # give no shit about unknowns 
 
     if verbose:
         print(f"# {level} classes = {len(cath_classes)}")
@@ -386,16 +437,25 @@ if __name__ == "__main__":
     
     ## CATH classification processing #######################
     table_loc = Path(path) / 'materials/metadata/domain-classifications.tsv'
+    
+    if args.level in "CATH":
+        level = {"C":"CLASS", "A":"ARCH", "T":"TOPOL", "H":"HOMOL"}[args.level]
+        cath_annotation_frame, cath_classifications, weights = build_annotations(table_loc, domains, level, cutoff=25)
+    else:
+        level = "CLASS"
+        # fool em
+        cath_annotation_frame, cath_classifications, weights = build_annotations(table_loc, domains, "CLASS", cutoff=25)
 
-    level = {"C":"CLASS", "A":"ARCH", "T":"TOPOL", "H":"HOMOL"}[args.level]
-    cath_annotation_frame, cath_classifications, weights = build_annotations(table_loc, domains, level, cutoff=19)
     with open(args.results_dir / 'params.txt', 'w') as par:
         astring = " ".join(map(str, args.filter_dims))
-        print(f"{level}", f"{args.threshold}", f"{astring}", f"{len(weights)}", file=par, sep='\n')
+        print(level, args.threshold, astring,
+              f"{len(weights) if args.level in 'CATH' else None}", args.pool, file=par, sep='\n')
+
         print(f"annotation_level={level}",
-                f"contact_thresh={args.threshold}",
-                f"architecture={astring}",
-                f"n_classes={len(weights)}", sep='\n')
+              f"contact_thresh={args.threshold}",
+              f"architecture={astring}",
+              f"pooling={args.pool}",
+              f"n_classes={len(weights) if args.level in 'CATH' else None}", sep='\n')
 
     # CUDA for PyTorch
     args.cuda = args.cuda and torch.cuda.is_available()
@@ -407,14 +467,15 @@ if __name__ == "__main__":
                                                                          stratifier='class')
     else:
         args.train_list, args.valid_list, args.test_list = map(load_set, args.lists)
-
     for s in ['train', 'valid', 'test']:
         save_set(args.results_dir / f"{s}.list", getattr(args, f"{s}_list"))
 
     # build model
     gae = MultitaskGAE(in_features=22,
                        out_features=args.filter_dims[-1],
-                       n_classes=len(weights),
+                       n_classes=len(weights) if args.level in "CATH" else None,
+                       pooling=args.pool,
+                       decode_seq=True,
                        filters=args.filter_dims, device=device)
     gae.to(device)
 
@@ -423,10 +484,15 @@ if __name__ == "__main__":
 
 
     # loss functions
-    loss_bc  = nn.BCELoss() # classify contact
-    loss_nll = nn.NLLLoss(weight=weights) # classify cath class
+    loss_bc  = nn.BCELoss()                    # classify contact
     loss_bc.cuda()
-    loss_nll.cuda()
+    loss_nll_seq  = nn.NLLLoss()               # classify sequence
+    loss_nll_seq.cuda()
+    if args.level in "CATH":
+        loss_nll_cath = nn.NLLLoss(weight=weights) # classify cath class
+        loss_nll_cath.cuda()
+    else:
+        loss_nll_cath = None
 
     # parameters
     params = {'batch_size': args.batch_size,
@@ -442,10 +508,10 @@ if __name__ == "__main__":
     validation_generator = data.DataLoader(validation_dataset, **params)
 
     # Creates the train_step function
-    train_step = make_train_step(gae, loss_bc, loss_nll, optimizer)
+    train_step = make_train_step(gae, loss_bc, loss_nll_seq, loss_nll_cath, optimizer)
 
     # Creates the valid_step function
-    valid_step = make_valid_step(gae, loss_bc, loss_nll)
+    valid_step = make_valid_step(gae, loss_bc, loss_nll_seq, loss_nll_cath)
 
     # mini-batch update
     train_loss_list = []
@@ -465,54 +531,69 @@ if __name__ == "__main__":
     N = len(training_generator.dataset)
     print("starting")
     for epoch in range(1, args.epochs + 1):
-        train_loss = 0.
+        losses = dict(total=0., contact=0., seq=0., cath=0.)
+
         for batch_idx, (A_batch, S_batch, C_batch) in enumerate(training_generator):
             A_batch = A_batch.to(device)
             S_batch = S_batch.to(device)
             C_batch = C_batch.to(device)
 
-            loss = train_step((A_batch, S_batch), (A_batch, C_batch))
-            train_loss += loss
+            loss_dictionary = train_step((A_batch, S_batch), (A_batch, S_batch, C_batch))
+            for loss in ['contact', 'seq', 'cath']:
+                losses['total'] += loss_dictionary[loss]
+                losses[loss] += loss_dictionary[loss]
 
             # print statistics
             if not (batch_idx % args.log_interval):
                 progress = batch_idx * args.batch_size
                 pct = 100. * batch_idx / T
-                print(f"[*] (train) epoch {epoch} [{progress:5d}/{N:5d} ({pct:5.2f}%)]\tloss: {loss:0.6f}", flush=True)
+                loss_summary = ", ".join([f"{k}={v:0.5f}" for k, v in loss_dictionary.items()])
+                fmt = f"[*] (train) E{epoch} [{progress:5d}/{N:5d} ({pct:5.2f}%)]\t" + loss_summary
+                print(fmt, flush=True)
 
-        avg_train_loss = train_loss / len(training_generator)
-        print(f"[!] E{epoch:3d}) average training loss: {avg_train_loss:0.4f}", flush=True)
-        sys.stdout.flush()
-        train_loss_list.append(avg_train_loss)
+        print(f"[!] E{epoch:3d}) (train) Averages:", flush=True)
+        for loss in losses:
+            print(f"\t{loss}: {losses[loss] / len(training_generator):0.4f}", flush=True)
+
+        train_loss_list.append({loss: losses[loss] / len(training_generator) for loss in losses})
+
         with torch.no_grad():
-            valid_loss = 0.
+            valid_losses = dict(total=0., contact=0., seq=0., cath=0.)
             for batch_idx, (A_batch, S_batch, C_batch) in enumerate(validation_generator):
                 A_batch = A_batch.to(device)
                 S_batch = S_batch.to(device)
                 C_batch = C_batch.to(device)
 
-                loss = valid_step((A_batch, S_batch), (A_batch, C_batch))
-                valid_loss += loss
+                loss_dictionary = valid_step((A_batch, S_batch), (A_batch, S_batch, C_batch))
+                for loss in ['contact', 'seq', 'cath']:
+                    valid_losses['total'] += loss_dictionary[loss]
+                    valid_losses[loss] += loss_dictionary[loss]
 
-        avg_valid_loss = valid_loss / len(validation_generator)
+        avg_valid_loss = valid_losses['total'] / len(validation_generator)
         if avg_valid_loss < best_valid_loss:
             # save the model
             best_model_name = model_name_fmt.format(valid_loss=avg_valid_loss)
             torch.save(gae.state_dict(), args.models_dir + best_model_name + '_model.pt')
 
-        print(f"[!] E{epoch:3d}) average validation loss: {avg_valid_loss:0.4f}", flush=True)
-        sys.stdout.flush()
-        valid_loss_list.append(avg_valid_loss)
+        print(f"[!] E{epoch:3d}) (validation) Averages:", flush=True)
+        for loss in losses:
+            print(f"\t{loss}: {valid_losses[loss] / len(validation_generator):0.4f}", flush=True)
+        valid_loss_list.append({loss: valid_losses[loss] / len(validation_generator) for loss in valid_losses})
 
     # plot lossess
-    title = f"Model loss: {filter_string}"
+    title = f"Model loss: {filter_string} (threshold = {args.threshold}"
     plot_losses(title, args.results_dir + 'model_loss.png', train_loss_list, valid_loss_list)
 
     # save model
     shutil.copyfile(args.models_dir + best_model_name + '_model.pt', args.results_dir + 'final.pt')
     # record the losses
     with open(args.results_dir + 'loss.tsv', 'w') as lossfile:
-        print("epoch", "train","val", sep='\t', file=lossfile)
-        for epoch, (tavg, vavg) in enumerate(zip(train_loss_list, valid_loss_list)):
-            print(epoch, tavg, vavg, sep='\t', file=lossfile)
+        sets = ['train', 'valid']
+        fields = ['seq', 'total', 'cath', 'contact']
+        columns = [f"{s}_{f}" for (s, f) in itertools.product(sets, fields)]
 
+        writer = csv.DictWriter(lossfile, fieldnames=columns, delimiter='\t')
+        writer.writeheader()
+        for tavg, vavg in zip(train_loss_list, valid_loss_list):
+            row = {**{f'train_{k}': v for k,v in tavg.items()}, **{f'valid_{k}': v for k,v in vavg.items()}}
+            writer.writerow(row)
