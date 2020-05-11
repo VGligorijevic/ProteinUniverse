@@ -18,11 +18,12 @@ conda activate protuniv
 #LEVEL=H
 LEVEL=0
 
-#FILTERS="64 128 128 256"
-FILTERS="128 128 128 128"
+FILTERS="64 128 128 256"
+#FILTERS="128 128 128 128"
 
 #POOLING="max"
-POOLING="sum"
+#POOLING="sum"
+POOLING="concat"
 
 THRESHOLD=6
 ARCH_SESSION=$(echo "${FILTERS}" | sed "s/\s/\-/g")

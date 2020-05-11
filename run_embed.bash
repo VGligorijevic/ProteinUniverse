@@ -24,27 +24,29 @@ ARCH="128-128-128-128"
 THRESHOLD=6
 
 #POOL="max"
-POOL="sum"
+#POOL="sum"
+POOL="concat"
+
 STEM=${ARCH}__L${LEVEL}__T${THRESHOLD}__P${POOL}
 
 SESSION=./results/results/${POOL}/${LEVEL}/${STEM}
 
 
-#FASTA=Data/cath/materials/cath-dataset-nonredundant-S40.fa
-#OUTPUT=Data/cath/databases/SSC/${STEM}
+# Settings for CATH clustering
+FASTA=Data/cath/materials/cath-dataset-nonredundant-S40.fa
+OUTPUT=Data/cath/databases/SSC/${STEM}
+LIST=${SESSION}/test.list
+LOC=/mnt/home/dberenberg/projects/ProteinUniverse/Data/cath/cath-nr-S40_tensors/
 
-OUTPUT=/mnt/home/dberenberg/projects/multimodal-fp/data/efp-embeddings-mtgae_${STEM}.full_raw.npz
-FASTA=/mnt/home/dberenberg/projects/multimodal-fp/data/human-swissmodel-STRING.fasta
+# Settings for multimodal human fp
+#OUTPUT=/mnt/home/dberenberg/projects/multimodal-fp/data/efp-embeddings-mtgae_${STEM}.full_raw.npz#FASTA=/mnt/home/dberenberg/projects/multimodal-fp/data/human-swissmodel-STRING.fasta
+#FASTA=/mnt/home/dberenberg/projects/multimodal-fp/data/human-swissmodel-STRING.fasta
+#LOC=/mnt/home/dberenberg/projects/multimodal-fp/data/distance_maps/tensors/ca
+#LIST=/mnt/home/dberenberg/projects/multimodal-fp/swiss_ids.list
 
-#mkdir -p Data/cath/databases/SSC
+if [ -d $OUTPUT ]; then
+    rm -r $OUTPUT
+fi
+mkdir -p ${OUTPUT}
 
-#if [ -d $OUTPUT ]; then#    rm -r $OUTPUT
-#    rm -r $OUTPUT
-#fi
-
-LOC=/mnt/home/dberenberg/projects/multimodal-fp/data/distance_maps/tensors/ca
-LIST=/mnt/home/dberenberg/projects/multimodal-fp/swiss_ids.list
-
-
-#python embed.py -i ${SESSION}/test.list -M ${SESSION} -o ${OUTPUT} -f ${FASTA} 
 python embed.py -i ${LIST} -M ${SESSION} -o ${OUTPUT} -f ${FASTA} -L ${LOC} 

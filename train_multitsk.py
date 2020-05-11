@@ -129,11 +129,13 @@ class MultitaskGAE(nn.Module):
         """
 
         # Decoder
+        k = 1 if self.pooling in ['max', 'sum'] else 2
+        indim = k * sum(self.filters)
         self.cmap_decoder = InnerProductDecoder(in_features=sum(self.filters), out_features=out_features)
         
         if self.n_classes is not None:
             self.classification_branch = nn.Sequential(
-                        nn.Linear(sum(self.filters), out_features=self.n_classes),
+                        nn.Linear(indim, out_features=self.n_classes),
                         nn.LogSoftmax(dim=-1)
                     )
         if self.decode_seq:
@@ -153,8 +155,11 @@ class MultitaskGAE(nn.Module):
             comb = x.sum(dim=1)
         elif self.pooling == 'max':
             comb, inds = torch.max(x, 1) 
+        elif self.pooling == 'concat':
+            maxes, _ = torch.max(x, 1)
+            sums     = x.sum(dim=1)
+            comb = torch.cat([maxes, sums], 1)
 
-        #print(comb.shape)
         if self.n_classes is not None:
             class_out = self.classification_branch(comb)
         else:
@@ -185,6 +190,10 @@ class Embedding(nn.Module):
             comb = x.sum(axis=1)
         elif self.pooling == 'max':
             comb, inds = torch.max(x, 1)
+        elif self.pooling == 'concat':
+            maxes, _ = torch.max(x, 1)
+            sums     = x.sum(dim=1)
+            comb = torch.cat([maxes, sums], dim=0)
         return comb 
 
 
@@ -330,7 +339,7 @@ def arguments():
                         dest='threshold', type=NaturalFloat, help="Aangstrom threshold", default=10.)
 
     parser.add_argument("-p", "--pooling",
-                        dest="pool", type=str, choices=['max', 'sum'], default='sum')
+                        dest="pool", type=str, choices=['max', 'sum', 'concat'], default='sum')
 
     parser.add_argument('--results_dir', type=Path, default='./results/', help="Directory to dump results and models.")
     parser.add_argument("--lists", type=Path, default=None, nargs=3, help="train, validation, and test paths in that order")
