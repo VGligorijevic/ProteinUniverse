@@ -211,7 +211,7 @@ class MemoryMappedDatasetWriter(object):
 
     @property
     def shardfilename(self):
-        return self.shards / f"shards_{self._s:06d}.shrd"
+        return f"shards_{self._s:06d}.shrd"
 
     def set(self, key, value, commit=False):
         """Append an item to the database"""
@@ -290,7 +290,8 @@ class MemoryMappedDatasetReader(object):
             self.__embedding_matrix = TemporaryMemmap(shape=self.__shape, dtype=np.float32)
             for row in shard_md:
                 n, d = map(int, (row['n'], row['d']))
-                mmarr = np.memmap(row['shard'], mode='r+', shape=(n,d), dtype='float32')
+                spath = self.shards / Path(row['shard']).name
+                mmarr = np.memmap(spath, mode='r+', shape=(n,d), dtype='float32')
                 self.__embedding_matrix[offset:offset+n,...] = mmarr
                 self.__members.append(mmarr)
                 offset += n

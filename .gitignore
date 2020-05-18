@@ -4,17 +4,25 @@
 *.log
 *.dat
 *.list
+*.tsk
+
 .ropeproject
 
 *.py[cxo]
 __pycache__
 
+
 results/
 databases/
+metadata/
 integrity_analysis/
 
+
+*.kmean # kmeans files
+.ipynb_checkpoints
 
 PDB90
 Data
 cluster_scripts
 dependencies
+kmean_files/

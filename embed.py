@@ -12,18 +12,19 @@ from datetime import datetime
 
 import torch
 import numpy as np
+from sklearn.manifold import TSNE
 
 from biotoolbox import fasta_reader
-from biotoolbox.dbutils import MemoryMappedDatasetWriter
 
-from gae.models import GAE
-from gae.models import Embedding
+from train_multitsk import MultitaskGAE, Embedding
+#from gae.models import Embedding, GAE
 from gae.loader import load_domain_list
 from gae.loader import load_fasta, seq2onehot
 
 
 # CUDA for PyTorch
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(device)
 
 def Exists(p):
     p = Path(p)
@@ -40,18 +41,18 @@ def Nat(i):
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-i", "--input-list", required=True, type=Exists,
-                        dest='inputs', help="Input file with list of absolute paths to test matrices.")
+                        dest='inputs', help="Input file with list of keys to locate inputs.")
+
+    parser.add_argument("-L", "--location", default='/mnt/ceph/users/dberenberg/Data/cath/cath-nr-S40_tensors', type=Path,
+                        dest='source_loc')
+
+
     parser.add_argument("-f", "--fasta", dest='fasta', required=True, type=Exists,
                         help="Maps ID to sequence")
-    parser.add_argument('-M', '--model-file', type=Exists,
-                        default='GAE_model', help="Name of the GAE model to be loaded.", required=True,
-                        dest='model_name')
-    parser.add_argument("-o", "--output", type=Path,
-                        dest='outputs', help="Output location to dump embeddings.")
-    parser.add_argument("--memmap", action='store_true', default=False,
-                        help="Write down embeddings as a memory mapped database rather than separate npz files")
-    parser.add_argument('-d', '--filter-dims', dest='filters', type=Nat,
-                        default=[64, 64, 64, 64, 64], nargs='+', help="Dimensions of GCN filters.")
+    parser.add_argument('-M', '--model-session', type=Exists, help="Location of completed session", required=True,
+                        dest='sess')
+    parser.add_argument("-o", "--out", type=Path,
+                        dest='output', help="Output .npz file containing 'E' matrix and 'id' array")
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true')
     parser.add_argument('-q', '--quiet', dest='verbose', action='store_false')
 
@@ -59,9 +60,12 @@ def arguments():
     return parser.parse_args()
 
 def load_model(model_file,
+               n_classes=4,
+               pooling='sum', 
                filters=[64, 64, 64, 64, 64]):
     """Load pretrained GAE model"""
-    gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
+    #gae = GAE(in_features=22, out_features=filters[-1], filters=filters, device=device)
+    gae = MultitaskGAE(in_features=22, out_features=filters[-1], filters=filters, n_classes=n_classes, pooling=pooling, device=device)
     gae.load_state_dict(torch.load(model_file), strict=False)
     gae.to(device)
     gae.eval()
@@ -92,61 +96,88 @@ def preprocess_sequence(seq):
     S = S.to(device)
     return S
 
-def save_embedding(name, embedding, database):
-    if isinstance(database, MemoryMappedDatasetWriter):
-        database.set(name, embedding, commit=True)
-    elif isinstance(database, (str, Path)):
-        database = Path(database)
-        path = database / f"{name}.npz"
-        np.savez_compressed(path,embedding=embedding)
-    else:
-        raise ValueError(f"Can't record embeddings to a {type(database)}")
-
 def seqdict(fastafile):
     return {k.lstrip('>'):v for k, v in fasta_reader(fastafile)}
 
+
 if __name__ == '__main__':
     args = arguments()
-    F      = load_model(args.model_name, filters=args.filters)
-    #id2seq = seqdict(args.fasta)
+    path = args.source_loc
+    sess = args.sess
+    args.model_name = sess / "final.pt"
+
+    # retrieve model info
+    with open(sess / 'params.txt', 'r') as params:
+        level, threshold, arch_string, n_classes, pooling = filter(None, map(lambda line: line.strip(), params))  
+
+    dimensions = list(map(int, arch_string.split()))
+    threshold = int(float(threshold))
+    n_classes = None if n_classes == 'None' else int(float(n_classes)) 
+
+    F      = load_model(args.model_name, filters=dimensions, n_classes=n_classes, pooling=pooling)
+    print(args.model_name, F.__class__.__name__)
     id2seq = load_fasta(args.fasta)
 
     with open(args.inputs, 'r') as f:
         lines = f.readlines()
         N = len(lines)
-    paths = map(lambda line: Path(line.strip()), lines)
-    if args.memmap:
-        M = MemoryMappedDatasetWriter(args.outputs,
-                                      embedding_dim=sum(args.filters),
-                                      start=True,
-                                      shard_size=N)
-    else:
-        M = args.outputs
-        M.mkdir(exist_ok=True, parents=True)
 
-    mag  = 10000
-    while not N // mag:
-        mag //= 10
-
-    skip = N // mag
-    print(skip, mag, N, flush=True)
-    clear = f"\r{80 * ' '}\r"
-
+    paths = map(lambda stem: Path(path) / f"{stem.strip()}.pt" , lines)
+    
+    M = args.output
+    
+    ##### silly display parameters ######
+    mag  = 10000 ########################
+    while not N // mag:################## 
+        mag //= 10 ######################
+    skip  = N // mag ####################
+    clear = f"\r{80 * ' '}\r"############ 
+    #####################################
+  
     start = datetime.now()
     try:
-        for i, tensor_file in enumerate(paths):
+        # sacrifice one for the grace of many
+        fst_pth = next(paths)
+        structure_id = fst_pth.stem
+        A, S = load_contact_map(fst_pth, resolution=threshold), preprocess_sequence(id2seq[structure_id])
+
+        x = F((A,S))[0].cpu().detach().numpy() 
+        d = x.shape[0] # recover the width
+        # create the big husker
+        emat = np.zeros((N, d))
+
+        structure_ids = []
+        emat[0] = x
+        structure_ids.append(structure_id)
+                                            # emat[0] is not forgotten
+        for i, tensor_file in enumerate(paths, 1):
             structure_id = tensor_file.stem
-            A = load_contact_map(tensor_file)
-            S = preprocess_sequence(id2seq[structure_id])
-            x = F((A, S))[0].cpu().detach().numpy()
-            save_embedding(structure_id, x, M)
-            if all((args.verbose, i)) and any((not i % skip, not i % N)):
-                print(f"{clear}{i}/{N} ({datetime.now() - start} elapsed)", end='', flush=True)
+            structure_ids.append(structure_id)
+
+            with torch.no_grad():
+                # extract features
+                A = load_contact_map(tensor_file, resolution=threshold)
+                S = preprocess_sequence(id2seq[structure_id])
+                
+                x = F((A, S))[0].cpu().detach().numpy()
+                A = A.cpu().detach()
+                S = S.cpu().detach()
+                del A, S
+            if not i % 1000:
+                torch.cuda.empty_cache()
+        
+            shape = x.shape
+            emat[i] = x
+            print(f"[*] {i}/{N} {shape} ({datetime.now() - start} elapsed)", flush=True)
+
+        print(f"[!] Finished embedding.", flush=True)
+        print("[!] Running TSNE",flush=True)
+        R = TSNE(n_components=2).fit_transform(emat)
+
+        np.savez_compressed(M, E=emat, id=np.array(structure_ids), R=R)
 
     except KeyboardInterrupt:
-        print(f"{clear}Exiting due to user input")
+        print(f"{clear}Exiting due to user input", flush=True)
     finally:
         elapsed = datetime.now() - start
-        print(f"{clear}Done! ({args.outputs}) ({elapsed} elapsed)")
-        if isinstance(M, MemoryMappedDatasetWriter):
-            M.close()
+        print(f"{clear}Done! ({args.output}) [{N}, {d}] ({elapsed} elapsed)", flush=True)

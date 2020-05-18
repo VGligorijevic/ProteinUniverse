@@ -2,4 +2,4 @@
 # -*- coding: utf-8 -*-
 
 from .mmdb import *
-from .index import *
+#from .index import *
