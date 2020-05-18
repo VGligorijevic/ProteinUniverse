@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .layers import MultiGraphConv, InnerProductDecoder
+from .layers import MultiGraphConv, InnerProductDecoder, PositionalEncoding
 
 
 class GAE(nn.Module):
@@ -21,6 +21,7 @@ class GAE(nn.Module):
 
         # Sequence embedding
         self.seq_embedd = nn.Sequential(nn.Linear(in_features, self.filters[0]), nn.ReLU(inplace=True))
+        self.pos_enc = PositionalEncoding(in_features, dropout=0.2)
 
         # Encoder
         """
@@ -47,6 +48,7 @@ class GAE(nn.Module):
     def forward(self, data):
         A, S = data
         S = self.seq_embedd(S)
+        S = self.pos_enc(S)
         gcn_embedd = [nn.Sequential(*list(self.cmap_encoder.children())[:i+1])((A, S))[1] for i in range(0, len(self.filters))]
         x = torch.cat(gcn_embedd, -1)
         cmap_out = self.cmap_decoder(x)
